@@ -2,6 +2,18 @@
 /* global Chart */
 
 let DATA = window.DATA;
+if (!DATA || !DATA.meta) {
+  console.error("DATA missing. Open via http://127.0.0.1:8765 (py -3 server.py)");
+  document.addEventListener("DOMContentLoaded", () => {
+    document.body.innerHTML =
+      '<div style="font-family:Nunito,sans-serif;padding:40px;max-width:560px;margin:40px auto;background:#fff;border-radius:24px;border:4px solid #00A0E9">' +
+      "<h1>🐱 Không load được data</h1>" +
+      "<p>Hãy chạy server rồi mở đúng địa chỉ:</p>" +
+      "<pre style='background:#EAF7FF;padding:12px;border-radius:12px'>cd Downloads\\log-depreciation-dashboard\npy -3 server.py\n\nMở: http://127.0.0.1:8765</pre>" +
+      "<p>Đừng double-click index.html nếu app.js không thấy window.DATA.</p></div>";
+  });
+  throw new Error("window.DATA is missing");
+}
 let periods = DATA.meta.periods;
 const colors = [
   "#00A0E9", "#E60012", "#FFD54F", "#7C4DFF",

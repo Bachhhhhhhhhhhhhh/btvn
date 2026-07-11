@@ -227,7 +227,9 @@ html = r'''<!DOCTYPE html>
 <div class="toast" id="toast"></div>
 <div class="confetti" id="confetti"></div>
 
-<script>const DATA = __DATA_JSON__;</script>
+<script>
+window.DATA = __DATA_JSON__;
+</script>
 <script src="app.js"></script>
 </body>
 </html>
