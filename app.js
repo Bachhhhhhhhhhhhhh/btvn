@@ -1,1438 +1,1746 @@
-/* Doraemon LOG Dashboard v4 — live updates + cute UI */
 /* global Chart */
+(function () {
+  "use strict";
 
-let DATA = window.DATA;
-if (!DATA || !DATA.meta) {
-  console.error("DATA missing. Open via http://127.0.0.1:8765 (py -3 server.py)");
-  document.addEventListener("DOMContentLoaded", () => {
-    document.body.innerHTML =
-      '<div style="font-family:Nunito,sans-serif;padding:40px;max-width:560px;margin:40px auto;background:#fff;border-radius:24px;border:4px solid #00A0E9">' +
-      "<h1>🐱 Không load được data</h1>" +
-      "<p>Hãy chạy server rồi mở đúng địa chỉ:</p>" +
-      "<pre style='background:#EAF7FF;padding:12px;border-radius:12px'>cd Downloads\\log-depreciation-dashboard\npy -3 server.py\n\nMở: http://127.0.0.1:8765</pre>" +
-      "<p>Đừng double-click index.html nếu app.js không thấy window.DATA.</p></div>";
-  });
-  throw new Error("window.DATA is missing");
-}
-let periods = DATA.meta.periods;
-const colors = [
-  "#00A0E9", "#E60012", "#FFD54F", "#7C4DFF",
-  "#26A69A", "#FF8A65", "#42A5F5", "#EC407A", "#66BB6A",
-];
-
-let charts = {};
-let focusPeriod = periods[0];
-let assetDetailChart = null;
-let assetSort = { key: "cost", dir: -1 };
-let favs = new Set(JSON.parse(localStorage.getItem("dora_favs") || "[]"));
-let helperIdx = 0;
-let liveTimer = null;
-let liveVersion = DATA.meta.fileMtime || 0;
-let liveMode = false;
-let lastPulse = 0;
-
-function buildTips() {
-  return [
-    "Bấm chuông 🔔 để nghe ting-a-ling và nhận mẹo ngẫu nhiên!",
-    "Chạy py -3 server.py để bật LIVE — sửa Excel là web tự cập nhật!",
-    "Kéo thả file .xlsx vào vùng Upload để nạp data mới ngay.",
-    "Dùng Compare để soi 2 kỳ khi thuyết trình — rất gọn.",
-    "Gắn ⭐ asset quan trọng, xem lại ở Favorites.",
-    "Lọc Ending ≤24m để thấy TS sắp hết khấu hao.",
-    "Export CSV mang bảng budget sang Excel trong 1 nốt nhạc.",
-    "Night mode xem ban đêm cũng dễ chịu 🌙",
-    ...(DATA.insights || []),
-  ];
-}
-let tips = buildTips();
-
-function bn(v) {
-  if (v == null || isNaN(v)) return "—";
-  const n = Number(v);
-  const a = Math.abs(n);
-  if (a >= 1e12) return (n / 1e12).toFixed(2) + "T";
-  if (a >= 1e9) return (n / 1e9).toFixed(2) + "B";
-  if (a >= 1e6) return (n / 1e6).toFixed(2) + "M";
-  if (a >= 1e3) return (n / 1e3).toFixed(1) + "K";
-  return n.toLocaleString("en-US", { maximumFractionDigits: 0 });
-}
-
-function full(v) {
-  if (v == null || isNaN(v)) return "—";
-  return Number(v).toLocaleString("en-US", { maximumFractionDigits: 0 });
-}
-
-function toast(msg) {
-  const el = document.getElementById("toast");
-  el.textContent = msg;
-  el.classList.add("show");
-  setTimeout(() => el.classList.remove("show"), 2400);
-}
-
-function destroy(key) {
-  if (charts[key]) {
-    charts[key].destroy();
-    delete charts[key];
-  }
-}
-
-function gVal(p) {
-  return DATA.kpi.grand?.[p] ?? DATA.kpi.byPeriod[p] ?? 0;
-}
-
-function saveFavs() {
-  localStorage.setItem("dora_favs", JSON.stringify([...favs]));
-}
-
-function ringBell() {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.type = "sine";
-    o.frequency.value = 880;
-    g.gain.value = 0.04;
-    o.connect(g);
-    g.connect(ctx.destination);
-    o.start();
-    o.frequency.exponentialRampToValueAtTime(1320, ctx.currentTime + 0.08);
-    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
-    o.stop(ctx.currentTime + 0.36);
-  } catch (e) {
-    /* ignore */
-  }
-}
-
-Chart.defaults.color = "#5A7A94";
-Chart.defaults.borderColor = "rgba(0,160,233,.12)";
-Chart.defaults.font.family = "'Nunito', system-ui, sans-serif";
-
-function initSelects() {
-  ["periodFocus", "cmpA", "cmpB"].forEach((id) => {
-    const sel = document.getElementById(id);
-    if (!sel || sel.options.length) return;
-    periods.forEach((p) => {
-      const o = document.createElement("option");
-      o.value = p;
-      o.textContent = p;
-      sel.appendChild(o);
+  // ── Bootstrap ──────────────────────────────────────────────
+  var DATA = window.DATA;
+  if (!DATA || !DATA.meta) {
+    document.addEventListener("DOMContentLoaded", function () {
+      document.body.innerHTML =
+        '<div style="max-width:520px;margin:48px auto;padding:28px;font-family:Nunito,system-ui,sans-serif;' +
+        'background:#fff;border-radius:20px;border:3px solid #1e9fe0;box-shadow:0 12px 32px rgba(6,90,148,.15)">' +
+        "<h1 style='color:#065a94;margin:0 0 12px;font-size:22px'>🐱 Chưa mở đúng cách</h1>" +
+        "<p style='line-height:1.55;color:#5d7590;font-weight:700;margin:0 0 12px'>" +
+        "Chạy server rồi mở đúng địa chỉ:</p>" +
+        "<pre style='background:#eef8ff;padding:14px;border-radius:12px;overflow:auto;font-weight:700;" +
+        "font-size:13px;line-height:1.5;margin:0'>cd Downloads\\log-depreciation-dashboard\n" +
+        "start.bat\n\n" +
+        "→ http://127.0.0.1:8765</pre>" +
+        "<p style='margin:14px 0 0;font-weight:700;color:#5d7590;font-size:13px'>" +
+        "Hoặc: <code>py -3 server.py</code></p></div>";
     });
-  });
-  document.getElementById("periodFocus").value = focusPeriod;
-  document.getElementById("cmpA").value = periods[0];
-  document.getElementById("cmpB").value = periods[1] || periods[0];
-  document.getElementById("periodFocus").onchange = () => {
-    focusPeriod = document.getElementById("periodFocus").value;
-    renderAll(false);
-    toast("Focus: " + focusPeriod + " 🔔");
-  };
-  document.getElementById("cmpA").onchange = renderCompare;
-  document.getElementById("cmpB").onchange = renderCompare;
-}
+    throw new Error("window.DATA missing");
+  }
 
-function renderKPI() {
-  const gF = gVal(focusPeriod);
-  const g103 = gVal("103Ki");
-  const idx = periods.indexOf(focusPeriod);
-  const prev = idx > 0 ? gVal(periods[idx - 1]) : null;
-  const gap = prev == null ? 0 : gF - prev;
-  const sc = DATA.kpi.statusCounts || {};
-  const items = [
-    { l: "Focus KH", v: bn(gF), h: focusPeriod + " · " + full(gF), c: "" },
-    { l: "103KI baseline", v: bn(g103), h: full(g103) + " VND", c: "" },
-    { l: "MT total", v: bn(DATA.kpi.totalMT), h: "103–108 sum", c: "" },
-    {
-      l: "GAP vs prior",
-      v: (gap >= 0 ? "+" : "") + bn(gap),
-      h: prev == null ? "First period" : full(gap),
-      c: gap > 0 ? "pos" : gap < 0 ? "neg" : "",
-    },
-    {
-      l: "Assets",
-      v: String(DATA.kpi.assetCount),
-      h: "🟡 " + (sc.ending_soon || 0) + " ending soon",
-      c: "",
-    },
-    {
-      l: "Acquisition",
-      v: bn(DATA.kpi.totalAcquisition),
-      h: "Nguyên giá portfolio",
-      c: "",
-    },
+  var periods = DATA.meta.periods.slice();
+  var COLORS = [
+    "#1e9fe0", "#e53935", "#ffd54f", "#7c4dff",
+    "#26a69a", "#ff8a65", "#42a5f5", "#ec407a", "#66bb6a",
   ];
-  document.getElementById("kpiGrid").innerHTML = items
-    .map(
-      (i) =>
-        `<div class="kpi"><div class="kpi-label">${i.l}</div>` +
-        `<div class="kpi-value mono ${i.c}">${i.v}</div>` +
-        `<div class="kpi-hint">${i.h}</div></div>`
-    )
-    .join("");
-}
 
-function renderInsights() {
-  const el = document.getElementById("insightChips");
-  if (!el) return;
-  const emojis = ["💡", "📌", "✨", "🔔", "🎯"];
-  el.innerHTML = (DATA.insights || [])
-    .map(
-      (t, i) =>
-        `<div class="chip"><span class="emoji">${emojis[i % 5]}</span><span>${t}</span></div>`
-    )
-    .join("");
-}
+  var charts = {};
+  var focusPeriod = periods[0];
+  var assetDetailChart = null;
+  var assetSort = { key: "cost", dir: -1 };
+  var favs = new Set(JSON.parse(localStorage.getItem("dora_favs") || "[]"));
+  var helperIdx = 0;
+  var liveVersion = DATA.meta.fileMtime || 0;
+  var liveTimer = null;
+  var nightPref = localStorage.getItem("dora_night") === "1";
 
-function renderPeriod() {
-  destroy("period");
-  const vals = periods.map(gVal);
-  charts.period = new Chart(document.getElementById("chartPeriod"), {
-    type: "bar",
-    data: {
-      labels: periods,
-      datasets: [
-        {
-          data: vals,
-          backgroundColor: periods.map((p) =>
-            p === focusPeriod ? "#00A0E9" : "rgba(0,160,233,.32)"
-          ),
-          borderRadius: 14,
-          borderSkipped: false,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      onClick: (_, els) => {
-        if (!els.length) return;
-        focusPeriod = periods[els[0].index];
-        document.getElementById("periodFocus").value = focusPeriod;
-        renderAll(false);
-        toast("Focus: " + focusPeriod);
-      },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: { label: (c) => " " + full(c.raw) + " VND" },
-        },
-      },
-      scales: {
-        x: { grid: { display: false }, ticks: { font: { weight: "800" } } },
-        y: {
-          ticks: { callback: (v) => bn(v) },
-          grid: { color: "rgba(0,160,233,.08)" },
-        },
-      },
-    },
-  });
-}
+  function buildTips() {
+    return [
+      "Chạy start.bat (hoặc py -3 server.py) để bật LIVE — Save Excel là web tự cập nhật.",
+      "Kéo thả file .xlsx vào vùng Upload để nạp data mới ngay.",
+      "Bấm chuông 🔔 để xem insight / mẹo ngẫu nhiên.",
+      "Dùng Compare để so 2 kỳ khi thuyết trình.",
+      "Gắn ⭐ asset quan trọng — xem lại ở Favorites.",
+      "Lọc Ending ≤24m để thấy TS sắp hết khấu hao.",
+      "Night mode lưu trên máy — bật lại lần sau vẫn giữ.",
+    ].concat(DATA.insights || []);
+  }
+  var tips = buildTips();
 
-function renderWaterfall() {
-  destroy("wf");
-  const wf = DATA.waterfall || [];
-  const labels = wf.map((x) => x.label);
-  const base = [];
-  const mid = [];
-  const cols = [];
-  let run = 0;
-  wf.forEach((s) => {
-    if (s.type === "total") {
-      base.push(0);
-      mid.push(s.value);
-      cols.push("#00A0E9");
-      run = s.value;
-    } else if (s.value >= 0) {
-      base.push(run);
-      mid.push(s.value);
-      cols.push("#26A69A");
-      run += s.value;
-    } else {
-      base.push(run + s.value);
-      mid.push(-s.value);
-      cols.push("#E60012");
-      run += s.value;
+  // ── Utils ──────────────────────────────────────────────────
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function bn(v) {
+    if (v == null || isNaN(v)) return "—";
+    var n = Number(v);
+    var a = Math.abs(n);
+    if (a >= 1e12) return (n / 1e12).toFixed(2) + "T";
+    if (a >= 1e9) return (n / 1e9).toFixed(2) + "B";
+    if (a >= 1e6) return (n / 1e6).toFixed(2) + "M";
+    if (a >= 1e3) return (n / 1e3).toFixed(1) + "K";
+    return n.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  }
+
+  function full(v) {
+    if (v == null || isNaN(v)) return "—";
+    return Number(v).toLocaleString("en-US", { maximumFractionDigits: 0 });
+  }
+
+  function toast(msg) {
+    var el = document.getElementById("toast");
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.add("show");
+    clearTimeout(toast._t);
+    toast._t = setTimeout(function () {
+      el.classList.remove("show");
+    }, 2400);
+  }
+
+  function destroy(key) {
+    if (charts[key]) {
+      charts[key].destroy();
+      delete charts[key];
     }
-  });
-  charts.wf = new Chart(document.getElementById("chartWaterfall"), {
-    type: "bar",
-    data: {
-      labels,
-      datasets: [
-        {
-          data: base,
-          backgroundColor: "transparent",
-          stack: "w",
-          barPercentage: 0.72,
-        },
-        {
-          data: mid,
-          backgroundColor: cols,
-          stack: "w",
-          borderRadius: 8,
-          barPercentage: 0.72,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          filter: (item) => item.datasetIndex === 1,
-          callbacks: {
-            label: (c) => {
-              const s = wf[c.dataIndex];
-              if (s.type === "delta") {
-                return " " + (s.value >= 0 ? "+" : "") + full(s.value);
-              }
-              return " " + full(s.value);
-            },
-          },
-        },
-      },
-      scales: {
-        x: {
-          stacked: true,
-          grid: { display: false },
-          ticks: { font: { size: 10, weight: "800" } },
-        },
-        y: {
-          stacked: true,
-          ticks: { callback: (v) => bn(v) },
-          grid: { color: "rgba(0,160,233,.08)" },
-        },
-      },
-    },
-  });
-}
-
-function sumBy(field, period) {
-  const m = {};
-  DATA.budgetRows.forEach((r) => {
-    m[r[field]] = (m[r[field]] || 0) + (r.values[period] || 0);
-  });
-  return m;
-}
-
-function makeDoughnut(canvasId, map, chartKey) {
-  const labels = Object.keys(map);
-  const vals = labels.map((k) => map[k]);
-  const total = vals.reduce((a, b) => a + b, 0) || 1;
-  charts[chartKey] = new Chart(document.getElementById(canvasId), {
-    type: "doughnut",
-    data: {
-      labels,
-      datasets: [
-        {
-          data: vals,
-          backgroundColor: colors,
-          borderWidth: 4,
-          borderColor: "#fff",
-          hoverOffset: 7,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      cutout: "58%",
-      plugins: {
-        legend: {
-          position: "bottom",
-          labels: { boxWidth: 12, font: { weight: "800", size: 11 } },
-        },
-        tooltip: {
-          callbacks: {
-            label: (c) => {
-              const pct = ((c.raw / total) * 100).toFixed(1);
-              return " " + c.label + ": " + bn(c.raw) + " (" + pct + "%)";
-            },
-          },
-        },
-      },
-    },
-  });
-}
-
-function renderPies() {
-  destroy("cc");
-  destroy("gl");
-  document.getElementById("descCC").textContent = "Share · " + focusPeriod;
-  document.getElementById("descGL").textContent = "Class · " + focusPeriod;
-  makeDoughnut("chartCC", sumBy("ccName", focusPeriod), "cc");
-  makeDoughnut("chartGL", sumBy("glName", focusPeriod), "gl");
-}
-
-function renderStack() {
-  destroy("stack");
-  const ccs = Object.keys(DATA.byCC);
-  charts.stack = new Chart(document.getElementById("chartCCstack"), {
-    type: "bar",
-    data: {
-      labels: periods,
-      datasets: ccs.map((cc, i) => ({
-        label: cc,
-        data: periods.map((p) => DATA.byCC[cc][p] || 0),
-        backgroundColor: colors[i % colors.length],
-        stack: "s",
-        borderRadius: 4,
-      })),
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {
-          position: "bottom",
-          labels: { boxWidth: 10, font: { weight: "800", size: 10 } },
-        },
-        tooltip: {
-          callbacks: {
-            label: (c) => " " + c.dataset.label + ": " + bn(c.raw),
-          },
-        },
-      },
-      scales: {
-        x: { stacked: true, grid: { display: false } },
-        y: {
-          stacked: true,
-          ticks: { callback: (v) => bn(v) },
-          grid: { color: "rgba(0,160,233,.08)" },
-        },
-      },
-    },
-  });
-}
-
-function renderGap() {
-  destroy("gap");
-  const gaps = [];
-  for (let i = 1; i < periods.length; i++) {
-    gaps.push(gVal(periods[i]) - gVal(periods[i - 1]));
-  }
-  charts.gap = new Chart(document.getElementById("chartGap"), {
-    type: "bar",
-    data: {
-      labels: periods.slice(1).map((p, i) => p + " vs " + periods[i]),
-      datasets: [
-        {
-          data: gaps,
-          backgroundColor: gaps.map((v) =>
-            v >= 0 ? "#26A69A" : "#E60012"
-          ),
-          borderRadius: 12,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: { label: (c) => " " + full(c.raw) },
-        },
-      },
-      scales: {
-        x: { grid: { display: false }, ticks: { font: { weight: "800" } } },
-        y: {
-          ticks: { callback: (v) => bn(v) },
-          grid: { color: "rgba(0,160,233,.08)" },
-        },
-      },
-    },
-  });
-}
-
-function renderMonthly() {
-  destroy("mTot");
-  destroy("mCC");
-  destroy("mGL");
-
-  charts.mTot = new Chart(document.getElementById("chartMonthly"), {
-    type: "line",
-    data: {
-      labels: DATA.monthly.labels,
-      datasets: [
-        {
-          data: DATA.monthly.total,
-          borderColor: "#00A0E9",
-          backgroundColor: "rgba(0,160,233,.16)",
-          fill: true,
-          tension: 0.4,
-          pointRadius: 4,
-          pointBackgroundColor: "#FFD54F",
-          pointBorderColor: "#00A0E9",
-          pointBorderWidth: 2,
-          borderWidth: 3,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: { label: (c) => " " + full(c.raw) },
-        },
-      },
-      scales: {
-        x: { grid: { display: false } },
-        y: {
-          ticks: { callback: (v) => bn(v) },
-          grid: { color: "rgba(0,160,233,.08)" },
-        },
-      },
-    },
-  });
-
-  const byCC = {};
-  DATA.monthly.rows.forEach((r) => {
-    if (!byCC[r.ccName]) byCC[r.ccName] = DATA.monthly.labels.map(() => 0);
-    r.months.forEach((v, i) => {
-      byCC[r.ccName][i] += v;
-    });
-  });
-  charts.mCC = new Chart(document.getElementById("chartMonthlyCC"), {
-    type: "line",
-    data: {
-      labels: DATA.monthly.labels,
-      datasets: Object.keys(byCC).map((k, i) => ({
-        label: k,
-        data: byCC[k],
-        borderColor: colors[i % colors.length],
-        tension: 0.4,
-        pointRadius: 3,
-        borderWidth: 3,
-        backgroundColor: "transparent",
-      })),
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {
-          position: "bottom",
-          labels: { boxWidth: 12, font: { weight: "800" } },
-        },
-        tooltip: {
-          callbacks: {
-            label: (c) => " " + c.dataset.label + ": " + bn(c.raw),
-          },
-        },
-      },
-      scales: {
-        x: { grid: { display: false } },
-        y: {
-          ticks: { callback: (v) => bn(v) },
-          grid: { color: "rgba(0,160,233,.08)" },
-        },
-      },
-    },
-  });
-
-  const byGL = {};
-  DATA.monthly.rows.forEach((r) => {
-    if (!byGL[r.glName]) byGL[r.glName] = DATA.monthly.labels.map(() => 0);
-    r.months.forEach((v, i) => {
-      byGL[r.glName][i] += v;
-    });
-  });
-  charts.mGL = new Chart(document.getElementById("chartMonthlyGL"), {
-    type: "bar",
-    data: {
-      labels: DATA.monthly.labels,
-      datasets: Object.keys(byGL).map((k, i) => ({
-        label: k,
-        data: byGL[k],
-        backgroundColor: colors[i % colors.length],
-        stack: "m",
-        borderRadius: 4,
-      })),
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {
-          position: "bottom",
-          labels: { boxWidth: 10, font: { weight: "800", size: 10 } },
-        },
-        tooltip: {
-          callbacks: {
-            label: (c) => " " + c.dataset.label + ": " + bn(c.raw),
-          },
-        },
-      },
-      scales: {
-        x: { stacked: true, grid: { display: false } },
-        y: {
-          stacked: true,
-          ticks: { callback: (v) => bn(v) },
-          grid: { color: "rgba(0,160,233,.08)" },
-        },
-      },
-    },
-  });
-}
-
-function renderHeatmap() {
-  const rows = DATA.heatmap || [];
-  let max = 1;
-  rows.forEach((r) =>
-    r.values.forEach((v) => {
-      if (v > max) max = v;
-    })
-  );
-  const header =
-    '<div class="h"></div>' +
-    periods.map((p) => '<div class="h">' + p + "</div>").join("");
-  const body = rows
-    .map((r) => {
-      const cells = r.values
-        .map((v) => {
-          const t = max ? v / max : 0;
-          const bg = "rgba(0,160,233," + (0.12 + t * 0.88).toFixed(3) + ")";
-          const col = t > 0.45 ? "#fff" : "#005A9E";
-          return (
-            '<div class="c" style="background:' +
-            bg +
-            ";color:" +
-            col +
-            '" title="' +
-            full(v) +
-            '">' +
-            bn(v) +
-            "</div>"
-          );
-        })
-        .join("");
-      return (
-        '<div class="r" title="' +
-        r.key +
-        '">' +
-        r.key +
-        "</div>" +
-        cells
-      );
-    })
-    .join("");
-  document.getElementById("heatMap").innerHTML = header + body;
-}
-
-function renderMovers() {
-  const up = DATA.moversUp || [];
-  const down = DATA.moversDown || [];
-  document.getElementById("moversUp").innerHTML =
-    up
-      .map(
-        (m) =>
-          '<div class="mover up"><span>' +
-          m.key +
-          '</span><span class="amt">+' +
-          full(m.gap) +
-          "</span></div>"
-      )
-      .join("") || "<div class='desc'>Không có tăng</div>";
-  document.getElementById("moversDown").innerHTML =
-    down
-      .map(
-        (m) =>
-          '<div class="mover down"><span>' +
-          m.key +
-          '</span><span class="amt">' +
-          full(m.gap) +
-          "</span></div>"
-      )
-      .join("") || "<div class='desc'>Không có giảm</div>";
-}
-
-function renderCompare() {
-  destroy("cmp");
-  const a = document.getElementById("cmpA").value;
-  const b = document.getElementById("cmpB").value;
-  const va = gVal(a);
-  const vb = gVal(b);
-  const d = vb - va;
-  const pct = va ? (d / va) * 100 : 0;
-  document.getElementById("cmpKpis").innerHTML =
-    '<div class="chip"><span class="emoji">🅰️</span>' +
-    a +
-    ': <b class="mono">' +
-    bn(va) +
-    "</b></div>" +
-    '<div class="chip"><span class="emoji">🅱️</span>' +
-    b +
-    ': <b class="mono">' +
-    bn(vb) +
-    "</b></div>" +
-    '<div class="chip ' +
-    (d >= 0 ? "up" : "down") +
-    '"><span class="emoji">Δ</span>Diff: <b class="mono">' +
-    (d >= 0 ? "+" : "") +
-    bn(d) +
-    "</b> (" +
-    (pct >= 0 ? "+" : "") +
-    pct.toFixed(1) +
-    "%)</div>";
-
-  const ccs = [...new Set(DATA.budgetRows.map((r) => r.ccName))];
-  const da = ccs.map((cc) =>
-    DATA.budgetRows
-      .filter((r) => r.ccName === cc)
-      .reduce((s, r) => s + (r.values[a] || 0), 0)
-  );
-  const db = ccs.map((cc) =>
-    DATA.budgetRows
-      .filter((r) => r.ccName === cc)
-      .reduce((s, r) => s + (r.values[b] || 0), 0)
-  );
-  charts.cmp = new Chart(document.getElementById("chartCompare"), {
-    type: "bar",
-    data: {
-      labels: ccs,
-      datasets: [
-        {
-          label: a,
-          data: da,
-          backgroundColor: "#00A0E9",
-          borderRadius: 10,
-        },
-        {
-          label: b,
-          data: db,
-          backgroundColor: "#FFD54F",
-          borderRadius: 10,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {
-          position: "bottom",
-          labels: { boxWidth: 12, font: { weight: "800" } },
-        },
-        tooltip: {
-          callbacks: {
-            label: (c) => " " + c.dataset.label + ": " + bn(c.raw),
-          },
-        },
-      },
-      scales: {
-        x: {
-          grid: { display: false },
-          ticks: { font: { weight: "800" } },
-        },
-        y: {
-          ticks: { callback: (v) => bn(v) },
-          grid: { color: "rgba(0,160,233,.08)" },
-        },
-      },
-    },
-  });
-}
-
-function renderAssetsCharts() {
-  destroy("topA");
-  destroy("aGL");
-  const top = DATA.assets.slice(0, 12);
-  charts.topA = new Chart(document.getElementById("chartTopAssets"), {
-    type: "bar",
-    data: {
-      labels: top.map((a) => (a.name || a.code).slice(0, 26)),
-      datasets: [
-        {
-          data: top.map((a) => a.cost),
-          backgroundColor: "#00A0E9",
-          borderRadius: 10,
-        },
-      ],
-    },
-    options: {
-      indexAxis: "y",
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: { label: (c) => " " + full(c.raw) },
-        },
-      },
-      scales: {
-        x: {
-          ticks: { callback: (v) => bn(v) },
-          grid: { color: "rgba(0,160,233,.08)" },
-        },
-        y: {
-          grid: { display: false },
-          ticks: { font: { size: 10, weight: "800" } },
-        },
-      },
-    },
-  });
-
-  const map = {};
-  DATA.assetsAll.forEach((a) => {
-    const k = a.glName || "Other";
-    map[k] = (map[k] || 0) + (a.cost || 0);
-  });
-  const labels = Object.keys(map);
-  charts.aGL = new Chart(document.getElementById("chartAssetGL"), {
-    type: "doughnut",
-    data: {
-      labels,
-      datasets: [
-        {
-          data: labels.map((k) => map[k]),
-          backgroundColor: colors,
-          borderWidth: 4,
-          borderColor: "#fff",
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      cutout: "55%",
-      plugins: {
-        legend: {
-          position: "bottom",
-          labels: { boxWidth: 12, font: { weight: "800" } },
-        },
-        tooltip: {
-          callbacks: {
-            label: (c) => " " + c.label + ": " + bn(c.raw),
-          },
-        },
-      },
-    },
-  });
-
-  const sc = DATA.kpi.statusCounts || {};
-  document.getElementById("statusChips").innerHTML =
-    '<div class="chip"><span class="emoji">🟢</span>Active <b>' +
-    (sc.active || 0) +
-    "</b></div>" +
-    '<div class="chip"><span class="emoji">🟡</span>Ending soon <b>' +
-    (sc.ending_soon || 0) +
-    "</b></div>" +
-    '<div class="chip"><span class="emoji">🔴</span>Ended <b>' +
-    (sc.ended || 0) +
-    "</b></div>" +
-    '<div class="chip"><span class="emoji">⭐</span>Favorites <b>' +
-    favs.size +
-    "</b></div>";
-}
-
-function statusTag(s) {
-  if (s === "ending_soon") return '<span class="tag gold">Ending soon</span>';
-  if (s === "ended") return '<span class="tag red">Ended</span>';
-  return '<span class="tag green">Active</span>';
-}
-
-function renderTables() {
-  const head = document.getElementById("budgetHead");
-  const body = document.getElementById("budgetBody");
-  const filterCC = document.getElementById("filterCC");
-  const filterGL = document.getElementById("filterGL");
-
-  if (!filterCC.dataset.ready) {
-    [...new Set(DATA.budgetRows.map((r) => r.ccName))].forEach((c) => {
-      const o = document.createElement("option");
-      o.value = c;
-      o.textContent = c;
-      filterCC.appendChild(o);
-    });
-    [...new Set(DATA.budgetRows.map((r) => r.glName))].forEach((c) => {
-      const o = document.createElement("option");
-      o.value = c;
-      o.textContent = c;
-      filterGL.appendChild(o);
-    });
-    filterCC.dataset.ready = "1";
-    filterCC.onchange = renderTables;
-    filterGL.onchange = renderTables;
   }
 
-  head.innerHTML =
-    "<tr><th>CC</th><th>G/L</th>" +
-    periods.map((p) => '<th class="num">' + p + "</th>").join("") +
-    '<th class="num">GAP 104/103</th></tr>';
-
-  const cc = filterCC.value;
-  const gl = filterGL.value;
-  let rows = DATA.budgetRows.filter(
-    (r) => (!cc || r.ccName === cc) && (!gl || r.glName === gl)
-  );
-  const gq = (document.getElementById("globalSearch").value || "")
-    .toLowerCase()
-    .trim();
-  if (gq) {
-    rows = rows.filter((r) =>
-      (r.ccName + " " + r.glName).toLowerCase().includes(gq)
-    );
+  function gVal(p) {
+    if (DATA.kpi.grand && DATA.kpi.grand[p] != null) return DATA.kpi.grand[p];
+    return (DATA.kpi.byPeriod && DATA.kpi.byPeriod[p]) || 0;
   }
 
-  body.innerHTML = rows
-    .map((r) => {
-      const gap =
-        r.gaps["104Ki"] ??
-        (r.values["104Ki"] || 0) - (r.values["103Ki"] || 0);
-      const gapCls = gap > 0 ? "pos" : gap < 0 ? "neg" : "";
-      return (
-        "<tr><td><span class=\"tag\">" +
-        r.ccName +
-        '</span></td><td><span class="tag blue">' +
-        r.glName +
-        "</span></td>" +
-        periods
-          .map(
-            (p) =>
-              '<td class="num">' + full(r.values[p] || 0) + "</td>"
-          )
-          .join("") +
-        '<td class="num ' +
-        gapCls +
-        '">' +
-        full(gap) +
-        "</td></tr>"
-      );
-    })
-    .join("");
-
-  const q = (
-    document.getElementById("assetSearch").value ||
-    document.getElementById("globalSearch").value ||
-    ""
-  )
-    .toLowerCase()
-    .trim();
-  const st = document.getElementById("statusFilter").value;
-  let list = DATA.assetsAll.slice();
-  if (st === "fav") list = list.filter((a) => favs.has(a.code || a.name));
-  else if (st) list = list.filter((a) => a.status === st);
-  if (q) {
-    list = list.filter((a) =>
-      (
-        (a.name || "") +
-        (a.code || "") +
-        (a.ccName || "") +
-        (a.glName || "")
-      )
-        .toLowerCase()
-        .includes(q)
-    );
+  function saveFavs() {
+    localStorage.setItem("dora_favs", JSON.stringify(Array.from(favs)));
   }
-  list.sort((a, b) => {
-    const k = assetSort.key;
-    const av = a[k];
-    const bv = b[k];
-    if (typeof av === "string") return av.localeCompare(bv || "") * assetSort.dir;
-    return ((av || 0) - (bv || 0)) * assetSort.dir;
-  });
 
-  document.getElementById("assetBody").innerHTML = list
-    .slice(0, 120)
-    .map((a) => {
-      const id = a.code || a.name;
-      const on = favs.has(id) ? "on" : "";
-      const idx = DATA.assetsAll.indexOf(a);
-      return (
-        '<tr data-idx="' +
-        idx +
-        '">' +
-        '<td><span class="star ' +
-        on +
-        '" data-fav="' +
-        id.replace(/"/g, "") +
-        '">⭐</span></td>' +
-        '<td class="mono">' +
-        (a.code || "—") +
-        "</td>" +
-        '<td class="name">' +
-        (a.name || "—") +
-        "</td>" +
-        '<td><span class="tag">' +
-        (a.ccName || "—") +
-        "</span></td>" +
-        '<td><span class="tag violet">' +
-        (a.glName || "—") +
-        "</span></td>" +
-        "<td>" +
-        statusTag(a.status) +
-        "</td>" +
-        '<td class="num">' +
-        full(a.cost) +
-        "</td>" +
-        '<td class="num">' +
-        (a.life != null ? a.life : "—") +
-        "</td>" +
-        '<td class="num">' +
-        full(a.totalAll) +
-        "</td></tr>"
-      );
-    })
-    .join("");
+  function ringBell() {
+    try {
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      var ctx = new Ctx();
+      var o = ctx.createOscillator();
+      var g = ctx.createGain();
+      o.type = "sine";
+      o.frequency.value = 880;
+      g.gain.value = 0.03;
+      o.connect(g);
+      g.connect(ctx.destination);
+      o.start();
+      o.frequency.exponentialRampToValueAtTime(1320, ctx.currentTime + 0.08);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+      o.stop(ctx.currentTime + 0.32);
+    } catch (e) { /* ignore */ }
+  }
 
-  document.querySelectorAll("#assetBody tr").forEach((tr) => {
-    tr.style.cursor = "pointer";
-    tr.onclick = (e) => {
-      if (e.target.classList.contains("star")) {
-        e.stopPropagation();
-        const id = e.target.dataset.fav;
-        if (favs.has(id)) favs.delete(id);
-        else favs.add(id);
-        saveFavs();
-        renderTables();
-        renderFavs();
-        renderAssetsCharts();
-        toast(favs.has(id) ? "Đã gắn sao ⭐" : "Bỏ sao");
-        return;
-      }
-      openAsset(Number(tr.dataset.idx));
-    };
-  });
-}
-
-function renderFavs() {
-  const list = DATA.assetsAll.filter((a) => favs.has(a.code || a.name));
-  const el = document.getElementById("favList");
-  if (!list.length) {
+  function setLiveBadge(state, text) {
+    var el = document.getElementById("liveBadge");
+    if (!el) return;
+    el.className = "live-badge " + state;
     el.innerHTML =
-      "<div class='desc'>Chưa có favorite — bấm ⭐ trên bảng asset nhé!</div>";
-    return;
+      '<span class="live-dot"></span><span class="live-text">' +
+      esc(text) +
+      "</span>";
+    el.title = text;
   }
-  el.innerHTML = list
-    .map(
-      (a) =>
-        '<div class="mover"><span>⭐ ' +
-        (a.name || a.code).slice(0, 40) +
-        '</span><span class="amt mono">' +
-        bn(a.cost) +
-        "</span></div>"
-    )
-    .join("");
-}
 
-function openAsset(idx) {
-  const a = DATA.assetsAll[idx];
-  if (!a) return;
-  document.getElementById("modalTitle").textContent =
-    "📦 " + (a.name || a.code || "Asset");
-  document.getElementById("modalSub").textContent =
-    (a.code || "") +
-    " · " +
-    (a.ccName || "") +
-    " · " +
-    (a.glName || "") +
-    " · " +
-    a.status;
-  document.getElementById("modalBody").innerHTML = [
-    ["Acquisition", full(a.cost) + " VND"],
-    ["Life", a.life != null ? a.life + " months" : "—"],
-    ["Monthly rate", full(a.monthlyRate || 0) + " VND"],
-    ["Start → End", (a.start || "—") + " → " + (a.end || "—")],
-    ["Months left", a.monthsLeft != null ? a.monthsLeft : "—"],
-    ["Σ MT KH", full(a.totalAll) + " VND"],
-  ]
-    .map(
-      ([k, v]) =>
-        '<div class="row"><span>' +
-        k +
-        '</span><span class="mono">' +
-        v +
-        "</span></div>"
-    )
-    .join("");
+  function statusTag(s) {
+    if (s === "ending_soon") return '<span class="tag gold">Ending soon</span>';
+    if (s === "ended") return '<span class="tag red">Ended</span>';
+    return '<span class="tag green">Active</span>';
+  }
 
-  if (assetDetailChart) assetDetailChart.destroy();
-  assetDetailChart = new Chart(document.getElementById("chartAssetDetail"), {
-    type: "bar",
-    data: {
-      labels: periods,
-      datasets: [
-        {
-          data: a.periodTotals || [],
-          backgroundColor: "#7C4DFF",
-          borderRadius: 10,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: { label: (c) => " " + full(c.raw) },
-        },
-      },
-      scales: {
-        x: { grid: { display: false } },
-        y: {
-          ticks: { callback: (v) => bn(v) },
-          grid: { color: "rgba(0,160,233,.08)" },
-        },
-      },
-    },
-  });
-  document.getElementById("modalBg").classList.add("show");
-}
+  function shortName(name, n) {
+    name = String(name || "");
+    return name.length > n ? name.slice(0, n - 1) + "…" : name;
+  }
 
-function setLiveBadge(state, text) {
-  const el = document.getElementById("liveBadge");
-  if (!el) return;
-  el.className = "live-badge " + state;
-  el.innerHTML =
-    '<span class="live-dot"></span><span class="live-text">' + text + "</span>";
-}
+  Chart.defaults.color = "#5d7590";
+  Chart.defaults.borderColor = "rgba(30,159,224,.12)";
+  Chart.defaults.font.family = "'Nunito', system-ui, sans-serif";
+  Chart.defaults.plugins.legend.labels.usePointStyle = true;
 
-function applyLiveData(newData, opts) {
-  const optsSafe = opts || {};
-  const prevFocus = focusPeriod;
-  DATA = newData;
-  window.DATA = newData;
-  periods = DATA.meta.periods;
-  tips = buildTips();
-  liveVersion = DATA.meta.fileMtime || liveVersion;
-  // keep focus if still valid
-  if (periods.indexOf(prevFocus) >= 0) focusPeriod = prevFocus;
-  else focusPeriod = periods[0];
-  // refresh period selects
-  ["periodFocus", "cmpA", "cmpB"].forEach((id) => {
-    const sel = document.getElementById(id);
+  // ── Selects ────────────────────────────────────────────────
+  function fillPeriodSelect(sel, value) {
     if (!sel) return;
-    const cur = sel.value;
     sel.innerHTML = "";
-    periods.forEach((p) => {
-      const o = document.createElement("option");
+    periods.forEach(function (p) {
+      var o = document.createElement("option");
       o.value = p;
       o.textContent = p;
       sel.appendChild(o);
     });
-    if (periods.indexOf(cur) >= 0) sel.value = cur;
-    else if (id === "periodFocus") sel.value = focusPeriod;
-    else if (id === "cmpA") sel.value = periods[0];
-    else sel.value = periods[1] || periods[0];
-  });
-  // reset filter ready flags so options rebuild
-  const fcc = document.getElementById("filterCC");
-  const fgl = document.getElementById("filterGL");
-  if (fcc) {
-    fcc.dataset.ready = "";
-    fcc.innerHTML = '<option value="">All CC</option>';
+    if (value && periods.indexOf(value) >= 0) sel.value = value;
   }
-  if (fgl) {
-    fgl.dataset.ready = "";
-    fgl.innerHTML = '<option value="">All G/L</option>';
-  }
-  renderAll(true);
-  document.body.classList.add("data-flash");
-  setTimeout(() => document.body.classList.remove("data-flash"), 700);
-  if (!optsSafe.silent) {
-    ringBell();
-    toast("🔄 Data updated · " + (DATA.meta.fileMtimeIso || DATA.meta.generated));
-  }
-  setLiveBadge("on", "LIVE · updated");
-}
 
-async function pollLive() {
-  try {
-    const st = await fetch("/api/status", { cache: "no-store" });
-    if (!st.ok) throw new Error("status " + st.status);
-    const meta = await st.json();
-    liveMode = true;
-    const ver = meta.fileMtime || meta.version || 0;
-    const label =
-      "LIVE · " +
-      (meta.source || "Excel") +
-      (meta.fileMtimeIso ? " · " + meta.fileMtimeIso : "");
-    if (ver && ver !== liveVersion) {
-      const res = await fetch("/api/data", { cache: "no-store" });
-      const payload = await res.json();
-      if (payload.ok && payload.data) {
-        applyLiveData(payload.data);
-        return;
+  function initSelects() {
+    fillPeriodSelect(document.getElementById("periodFocus"), focusPeriod);
+    fillPeriodSelect(document.getElementById("cmpA"), periods[0]);
+    fillPeriodSelect(document.getElementById("cmpB"), periods[1] || periods[0]);
+
+    document.getElementById("periodFocus").onchange = function () {
+      focusPeriod = this.value;
+      renderAll(false);
+      toast("Focus: " + focusPeriod);
+    };
+    document.getElementById("cmpA").onchange = renderCompare;
+    document.getElementById("cmpB").onchange = renderCompare;
+  }
+
+  // ── Live ───────────────────────────────────────────────────
+  function applyLiveData(newData, silent) {
+    var prev = focusPeriod;
+    DATA = newData;
+    window.DATA = newData;
+    periods = DATA.meta.periods.slice();
+    tips = buildTips();
+    liveVersion = DATA.meta.fileMtime || liveVersion;
+    if (periods.indexOf(prev) >= 0) focusPeriod = prev;
+    else focusPeriod = periods[0];
+
+    fillPeriodSelect(document.getElementById("periodFocus"), focusPeriod);
+    var a = document.getElementById("cmpA").value;
+    var b = document.getElementById("cmpB").value;
+    fillPeriodSelect(
+      document.getElementById("cmpA"),
+      periods.indexOf(a) >= 0 ? a : periods[0]
+    );
+    fillPeriodSelect(
+      document.getElementById("cmpB"),
+      periods.indexOf(b) >= 0 ? b : periods[1] || periods[0]
+    );
+
+    var fcc = document.getElementById("filterCC");
+    var fgl = document.getElementById("filterGL");
+    if (fcc) {
+      fcc.dataset.ready = "";
+      fcc.innerHTML = '<option value="">All CC</option>';
+    }
+    if (fgl) {
+      fgl.dataset.ready = "";
+      fgl.innerHTML = '<option value="">All G/L</option>';
+    }
+
+    renderAll(true);
+    document.body.classList.add("data-flash");
+    setTimeout(function () {
+      document.body.classList.remove("data-flash");
+    }, 550);
+    if (!silent) {
+      ringBell();
+      toast("Đã cập nhật · " + (DATA.meta.fileMtimeIso || DATA.meta.generated));
+    }
+    setLiveBadge("on", "LIVE · updated");
+  }
+
+  async function pollLive() {
+    try {
+      var st = await fetch("/api/status", { cache: "no-store" });
+      if (!st.ok) throw new Error("offline");
+      var meta = await st.json();
+      var ver = meta.fileMtime || meta.version || 0;
+      var src = meta.source || "Excel";
+      var label = "LIVE";
+      if (meta.fileMtimeIso) label += " · " + meta.fileMtimeIso;
+      else label += " · " + src;
+
+      if (ver && ver !== liveVersion) {
+        setLiveBadge("sync", "Syncing…");
+        var res = await fetch("/api/data", { cache: "no-store" });
+        var payload = await res.json();
+        if (payload.ok && payload.data) {
+          applyLiveData(payload.data, false);
+          return;
+        }
       }
+      setLiveBadge("on", label);
+      var foot = document.getElementById("liveFoot");
+      if (foot && meta.lastExtract) {
+        var ago = Math.max(0, Math.round(Date.now() / 1000 - meta.lastExtract));
+        foot.textContent =
+          "Watching every " +
+          (meta.pollSec || 2) +
+          "s · last extract " +
+          ago +
+          "s ago · " +
+          src;
+      }
+    } catch (e) {
+      setLiveBadge("off", "STATIC · chạy start.bat");
     }
-    setLiveBadge("on", label);
-    const ago = meta.lastExtract
-      ? Math.max(0, Math.round(Date.now() / 1000 - meta.lastExtract))
-      : null;
-    const foot = document.getElementById("liveFoot");
-    if (foot) {
-      foot.textContent =
-        "Watching every " +
-        (meta.pollSec || 2) +
-        "s" +
-        (ago != null ? " · last extract " + ago + "s ago" : "");
-    }
-  } catch (e) {
-    liveMode = false;
-    setLiveBadge("off", "STATIC · open via server.py for LIVE");
   }
-}
 
-function startLivePolling() {
-  // only when served over http(s)
-  if (location.protocol === "file:") {
-    setLiveBadge("off", "STATIC · run: py -3 server.py");
-    return;
-  }
-  pollLive();
-  liveTimer = setInterval(pollLive, 2500);
-}
-
-async function uploadExcel(file) {
-  if (!file) return;
-  setLiveBadge("sync", "Uploading…");
-  toast("Đang upload " + file.name + "…");
-  try {
+  function startLivePolling() {
     if (location.protocol === "file:") {
-      toast("Cần chạy server.py để upload Excel");
-      setLiveBadge("off", "STATIC · run server.py");
+      setLiveBadge("off", "STATIC · chạy start.bat");
       return;
     }
-    const fd = new FormData();
-    fd.append("file", file, file.name);
-    const res = await fetch("/api/upload", { method: "POST", body: fd });
-    const payload = await res.json();
-    if (!payload.ok) throw new Error(payload.error || "upload failed");
-    const dataRes = await fetch("/api/data", { cache: "no-store" });
-    const wrap = await dataRes.json();
-    if (wrap.ok && wrap.data) applyLiveData(wrap.data);
-    else toast("Upload ok — reload page");
-  } catch (err) {
-    console.error(err);
-    toast("Upload lỗi: " + err.message);
-    setLiveBadge("off", "Upload failed");
+    pollLive();
+    liveTimer = setInterval(pollLive, 2500);
   }
-}
 
-function renderAll(meta) {
-  if (meta !== false) {
-    document.getElementById("srcName").textContent = DATA.meta.source;
-    document.getElementById("genAt").textContent =
-      DATA.meta.fileMtimeIso || DATA.meta.generated;
-    document.getElementById("footMeta").textContent =
-      "v" +
-      (DATA.meta.version || "4") +
-      " · " +
-      (DATA.meta.generated || "");
-  }
-  renderKPI();
-  renderInsights();
-  renderPeriod();
-  renderWaterfall();
-  renderPies();
-  renderStack();
-  renderGap();
-  renderCompare();
-  renderMonthly();
-  renderHeatmap();
-  renderMovers();
-  renderAssetsCharts();
-  renderTables();
-  renderFavs();
-  const ht = document.getElementById("helperText");
-  if (ht) ht.textContent = tips[helperIdx % tips.length];
-}
-
-function party() {
-  const box = document.getElementById("confetti");
-  box.innerHTML = "";
-  const cols = ["#00A0E9", "#E60012", "#FFD54F", "#fff", "#7C4DFF", "#26A69A"];
-  for (let i = 0; i < 48; i++) {
-    const el = document.createElement("i");
-    el.style.left = Math.random() * 100 + "%";
-    el.style.background = cols[i % cols.length];
-    el.style.animationDuration = 2 + Math.random() * 2.5 + "s";
-    el.style.width = 6 + Math.random() * 8 + "px";
-    el.style.height = el.style.width;
-    box.appendChild(el);
-  }
-  setTimeout(() => {
-    box.innerHTML = "";
-  }, 4500);
-  ringBell();
-  toast("Yayyy! 🎉 Doraemon party!");
-}
-
-function wireEvents() {
-  document.getElementById("assetSearch").oninput = renderTables;
-  document.getElementById("statusFilter").onchange = renderTables;
-  document.getElementById("globalSearch").oninput = renderTables;
-  document.getElementById("modalClose").onclick = () =>
-    document.getElementById("modalBg").classList.remove("show");
-  document.getElementById("modalBg").onclick = (e) => {
-    if (e.target.id === "modalBg") e.currentTarget.classList.remove("show");
-  };
-  document.getElementById("btnPrint").onclick = () => window.print();
-  document.getElementById("btnNight").onclick = () => {
-    document.body.classList.toggle("night");
-    toast(
-      document.body.classList.contains("night")
-        ? "Night mode 🌙"
-        : "Day mode ☀️"
-    );
-  };
-  document.getElementById("btnConfetti").onclick = party;
-  document.getElementById("bellBtn").onclick = () => {
-    ringBell();
-    helperIdx++;
-    document.getElementById("helperText").textContent =
-      tips[helperIdx % tips.length];
-    document.getElementById("helper").classList.remove("hidden");
-    toast("Ting-a-ling 🔔");
-  };
-  document.getElementById("helperNext").onclick = () => {
-    helperIdx++;
-    document.getElementById("helperText").textContent =
-      tips[helperIdx % tips.length];
-    ringBell();
-  };
-  document.getElementById("helperHide").onclick = () =>
-    document.getElementById("helper").classList.add("hidden");
-
-  document.getElementById("btnShare").onclick = async () => {
-    const g = gVal(focusPeriod);
-    const text =
-      "LOG Depreciation (" +
-      DATA.meta.source +
-      ")\nFocus " +
-      focusPeriod +
-      ": " +
-      full(g) +
-      " VND\nMT total: " +
-      full(DATA.kpi.totalMT) +
-      " VND\nAssets: " +
-      DATA.kpi.assetCount +
-      "\nGenerated: " +
-      DATA.meta.generated;
-    try {
-      await navigator.clipboard.writeText(text);
-      toast("Đã copy summary 📝");
-    } catch (e) {
-      toast("Clipboard blocked");
+  async function uploadExcel(file) {
+    if (!file) return;
+    if (location.protocol === "file:") {
+      toast("Cần start.bat / server.py để upload");
+      return;
     }
-  };
+    var name = (file.name || "").toLowerCase();
+    if (!name.endsWith(".xlsx") && !name.endsWith(".xlsm")) {
+      toast("Chỉ nhận file .xlsx / .xlsm");
+      return;
+    }
+    setLiveBadge("sync", "Uploading…");
+    try {
+      var fd = new FormData();
+      fd.append("file", file, file.name);
+      var res = await fetch("/api/upload", { method: "POST", body: fd });
+      var payload = await res.json();
+      if (!payload.ok) throw new Error(payload.error || "upload failed");
+      var dataRes = await fetch("/api/data", { cache: "no-store" });
+      var wrap = await dataRes.json();
+      if (wrap.ok && wrap.data) applyLiveData(wrap.data, false);
+      else throw new Error("no data after upload");
+    } catch (err) {
+      toast("Upload lỗi: " + err.message);
+      setLiveBadge("err", "Upload failed");
+    }
+  }
 
-  document.getElementById("btnExportCsv").onclick = () => {
-    const lines = [["CC", "G/L", ...periods, "GAP_104_103"]];
-    DATA.budgetRows.forEach((r) => {
-      const gap =
-        r.gaps["104Ki"] ??
-        (r.values["104Ki"] || 0) - (r.values["103Ki"] || 0);
-      lines.push([
-        r.ccName,
-        r.glName,
-        ...periods.map((p) => r.values[p] || 0),
-        gap,
-      ]);
+  // ── Render ─────────────────────────────────────────────────
+  function renderKPI() {
+    var gF = gVal(focusPeriod);
+    var g103 = gVal("103Ki");
+    var idx = periods.indexOf(focusPeriod);
+    var prev = idx > 0 ? gVal(periods[idx - 1]) : null;
+    var gap = prev == null ? 0 : gF - prev;
+    var sc = DATA.kpi.statusCounts || {};
+    var items = [
+      { l: "Focus KH", v: bn(gF), h: focusPeriod + " · " + full(gF), c: "" },
+      { l: "103KI baseline", v: bn(g103), h: full(g103) + " VND", c: "" },
+      { l: "MT total", v: bn(DATA.kpi.totalMT), h: "103–108 sum", c: "" },
+      {
+        l: "GAP vs prior",
+        v: (gap >= 0 ? "+" : "") + bn(gap),
+        h: prev == null ? "First period" : full(gap),
+        c: gap > 0 ? "pos" : gap < 0 ? "neg" : "",
+      },
+      {
+        l: "Assets",
+        v: String(DATA.kpi.assetCount),
+        h: "Ending soon: " + (sc.ending_soon || 0),
+        c: "",
+      },
+      {
+        l: "Acquisition",
+        v: bn(DATA.kpi.totalAcquisition),
+        h: "Nguyên giá portfolio",
+        c: "",
+      },
+    ];
+    document.getElementById("kpiGrid").innerHTML = items
+      .map(function (i) {
+        return (
+          '<div class="kpi"><div class="kpi-label">' +
+          esc(i.l) +
+          '</div><div class="kpi-value mono ' +
+          i.c +
+          '">' +
+          esc(i.v) +
+          '</div><div class="kpi-hint">' +
+          esc(i.h) +
+          "</div></div>"
+        );
+      })
+      .join("");
+  }
+
+  function renderInsights() {
+    var el = document.getElementById("insightChips");
+    if (!el) return;
+    var em = ["💡", "📌", "✨", "🔔", "🎯"];
+    el.innerHTML = (DATA.insights || [])
+      .map(function (t, i) {
+        return (
+          '<div class="chip"><span class="emoji">' +
+          em[i % 5] +
+          "</span><span>" +
+          esc(t) +
+          "</span></div>"
+        );
+      })
+      .join("");
+  }
+
+  function renderPeriod() {
+    destroy("period");
+    var vals = periods.map(gVal);
+    charts.period = new Chart(document.getElementById("chartPeriod"), {
+      type: "bar",
+      data: {
+        labels: periods,
+        datasets: [
+          {
+            data: vals,
+            backgroundColor: periods.map(function (p) {
+              return p === focusPeriod ? "#1e9fe0" : "rgba(30,159,224,.28)";
+            }),
+            borderRadius: 10,
+            borderSkipped: false,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        onClick: function (_, els) {
+          if (!els.length) return;
+          focusPeriod = periods[els[0].index];
+          document.getElementById("periodFocus").value = focusPeriod;
+          renderAll(false);
+          toast("Focus: " + focusPeriod);
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: function (c) {
+                return " " + full(c.raw) + " VND";
+              },
+            },
+          },
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { font: { weight: "800" } } },
+          y: {
+            ticks: {
+              callback: function (v) {
+                return bn(v);
+              },
+            },
+            grid: { color: "rgba(30,159,224,.08)" },
+          },
+        },
+      },
     });
-    const csv = lines
-      .map((row) =>
-        row.map((x) => '"' + String(x).replace(/"/g, '""') + '"').join(",")
-      )
-      .join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "log_depreciation_budget.csv";
-    a.click();
-    URL.revokeObjectURL(a.href);
-    toast("CSV exported 📤");
-  };
+  }
 
-  document.querySelectorAll("th[data-sort]").forEach((th) => {
-    th.onclick = () => {
-      const k = th.dataset.sort;
-      if (assetSort.key === k) assetSort.dir *= -1;
-      else {
-        assetSort.key = k;
-        assetSort.dir = -1;
+  function renderWaterfall() {
+    destroy("wf");
+    var wf = DATA.waterfall || [];
+    var labels = wf.map(function (x) {
+      return x.label;
+    });
+    var base = [];
+    var mid = [];
+    var cols = [];
+    var run = 0;
+    wf.forEach(function (s) {
+      if (s.type === "total") {
+        base.push(0);
+        mid.push(s.value);
+        cols.push("#1e9fe0");
+        run = s.value;
+      } else if (s.value >= 0) {
+        base.push(run);
+        mid.push(s.value);
+        cols.push("#26a69a");
+        run += s.value;
+      } else {
+        base.push(run + s.value);
+        mid.push(-s.value);
+        cols.push("#e53935");
+        run += s.value;
       }
-      renderTables();
-    };
-  });
-
-  const titles = {
-    overview: "Overview",
-    midterm: "Mid-term",
-    compare: "Compare",
-    monthly: "Monthly",
-    heatmap: "Heatmap",
-    movers: "Movers",
-    assets: "Assets",
-    tables: "Tables",
-    favs: "Favorites",
-  };
-  document.querySelectorAll("[data-nav]").forEach((a) => {
-    a.addEventListener("click", () => {
-      document
-        .querySelectorAll("[data-nav]")
-        .forEach((x) => x.classList.remove("active"));
-      a.classList.add("active");
-      const id = a.getAttribute("href").slice(1);
-      document.getElementById("pageTitle").textContent =
-        titles[id] || "Dashboard";
     });
-  });
-}
+    charts.wf = new Chart(document.getElementById("chartWaterfall"), {
+      type: "bar",
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            data: base,
+            backgroundColor: "transparent",
+            stack: "w",
+            barPercentage: 0.72,
+          },
+          {
+            data: mid,
+            backgroundColor: cols,
+            stack: "w",
+            borderRadius: 8,
+            barPercentage: 0.72,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            filter: function (item) {
+              return item.datasetIndex === 1;
+            },
+            callbacks: {
+              label: function (c) {
+                var s = wf[c.dataIndex];
+                if (s.type === "delta")
+                  return " " + (s.value >= 0 ? "+" : "") + full(s.value);
+                return " " + full(s.value);
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            stacked: true,
+            grid: { display: false },
+            ticks: { font: { size: 10, weight: "800" } },
+          },
+          y: {
+            stacked: true,
+            ticks: {
+              callback: function (v) {
+                return bn(v);
+              },
+            },
+            grid: { color: "rgba(30,159,224,.08)" },
+          },
+        },
+      },
+    });
+  }
 
-document.addEventListener("DOMContentLoaded", () => {
-  try {
-    initSelects();
-    wireEvents();
-    renderAll(true);
-    startLivePolling();
-    // drag-drop upload zone
-    const dz = document.getElementById("dropZone");
-    const fi = document.getElementById("fileInput");
+  function sumBy(field, period) {
+    var m = {};
+    (DATA.budgetRows || []).forEach(function (r) {
+      m[r[field]] = (m[r[field]] || 0) + (r.values[period] || 0);
+    });
+    return m;
+  }
+
+  function makeDoughnut(canvasId, map, key) {
+    var labels = Object.keys(map);
+    var vals = labels.map(function (k) {
+      return map[k];
+    });
+    var total =
+      vals.reduce(function (a, b) {
+        return a + b;
+      }, 0) || 1;
+    charts[key] = new Chart(document.getElementById(canvasId), {
+      type: "doughnut",
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            data: vals,
+            backgroundColor: COLORS,
+            borderWidth: 3,
+            borderColor: "#fff",
+            hoverOffset: 5,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: "58%",
+        plugins: {
+          legend: {
+            position: "bottom",
+            labels: { boxWidth: 10, font: { weight: "800", size: 10.5 } },
+          },
+          tooltip: {
+            callbacks: {
+              label: function (c) {
+                var pct = ((c.raw / total) * 100).toFixed(1);
+                return " " + c.label + ": " + bn(c.raw) + " (" + pct + "%)";
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  function renderPies() {
+    destroy("cc");
+    destroy("gl");
+    document.getElementById("descCC").textContent = "Share · " + focusPeriod;
+    document.getElementById("descGL").textContent = "Class · " + focusPeriod;
+    makeDoughnut("chartCC", sumBy("ccName", focusPeriod), "cc");
+    makeDoughnut("chartGL", sumBy("glName", focusPeriod), "gl");
+  }
+
+  function renderStack() {
+    destroy("stack");
+    var ccs = Object.keys(DATA.byCC || {});
+    charts.stack = new Chart(document.getElementById("chartCCstack"), {
+      type: "bar",
+      data: {
+        labels: periods,
+        datasets: ccs.map(function (cc, i) {
+          return {
+            label: cc,
+            data: periods.map(function (p) {
+              return (DATA.byCC[cc] && DATA.byCC[cc][p]) || 0;
+            }),
+            backgroundColor: COLORS[i % COLORS.length],
+            stack: "s",
+            borderRadius: 3,
+          };
+        }),
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: "bottom",
+            labels: { boxWidth: 10, font: { weight: "800", size: 10 } },
+          },
+          tooltip: {
+            callbacks: {
+              label: function (c) {
+                return " " + c.dataset.label + ": " + bn(c.raw);
+              },
+            },
+          },
+        },
+        scales: {
+          x: { stacked: true, grid: { display: false } },
+          y: {
+            stacked: true,
+            ticks: {
+              callback: function (v) {
+                return bn(v);
+              },
+            },
+            grid: { color: "rgba(30,159,224,.08)" },
+          },
+        },
+      },
+    });
+  }
+
+  function renderGap() {
+    destroy("gap");
+    var gaps = [];
+    for (var i = 1; i < periods.length; i++) {
+      gaps.push(gVal(periods[i]) - gVal(periods[i - 1]));
+    }
+    charts.gap = new Chart(document.getElementById("chartGap"), {
+      type: "bar",
+      data: {
+        labels: periods.slice(1).map(function (p, i) {
+          return p + " vs " + periods[i];
+        }),
+        datasets: [
+          {
+            data: gaps,
+            backgroundColor: gaps.map(function (v) {
+              return v >= 0 ? "#26a69a" : "#e53935";
+            }),
+            borderRadius: 10,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: function (c) {
+                return " " + full(c.raw);
+              },
+            },
+          },
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { font: { weight: "800" } } },
+          y: {
+            ticks: {
+              callback: function (v) {
+                return bn(v);
+              },
+            },
+            grid: { color: "rgba(30,159,224,.08)" },
+          },
+        },
+      },
+    });
+  }
+
+  function renderMonthly() {
+    destroy("mTot");
+    destroy("mCC");
+    destroy("mGL");
+    var monthly = DATA.monthly || { labels: [], total: [], rows: [] };
+
+    charts.mTot = new Chart(document.getElementById("chartMonthly"), {
+      type: "line",
+      data: {
+        labels: monthly.labels,
+        datasets: [
+          {
+            data: monthly.total,
+            borderColor: "#1e9fe0",
+            backgroundColor: "rgba(30,159,224,.12)",
+            fill: true,
+            tension: 0.35,
+            pointRadius: 3.5,
+            pointBackgroundColor: "#ffd54f",
+            pointBorderColor: "#1e9fe0",
+            pointBorderWidth: 2,
+            borderWidth: 3,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: function (c) {
+                return " " + full(c.raw);
+              },
+            },
+          },
+        },
+        scales: {
+          x: { grid: { display: false } },
+          y: {
+            ticks: {
+              callback: function (v) {
+                return bn(v);
+              },
+            },
+            grid: { color: "rgba(30,159,224,.08)" },
+          },
+        },
+      },
+    });
+
+    var byCC = {};
+    (monthly.rows || []).forEach(function (r) {
+      if (!byCC[r.ccName])
+        byCC[r.ccName] = monthly.labels.map(function () {
+          return 0;
+        });
+      r.months.forEach(function (v, i) {
+        byCC[r.ccName][i] += v;
+      });
+    });
+    charts.mCC = new Chart(document.getElementById("chartMonthlyCC"), {
+      type: "line",
+      data: {
+        labels: monthly.labels,
+        datasets: Object.keys(byCC).map(function (k, i) {
+          return {
+            label: k,
+            data: byCC[k],
+            borderColor: COLORS[i % COLORS.length],
+            tension: 0.35,
+            pointRadius: 2.5,
+            borderWidth: 2.5,
+            backgroundColor: "transparent",
+          };
+        }),
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: "bottom",
+            labels: { boxWidth: 10, font: { weight: "800", size: 10.5 } },
+          },
+          tooltip: {
+            callbacks: {
+              label: function (c) {
+                return " " + c.dataset.label + ": " + bn(c.raw);
+              },
+            },
+          },
+        },
+        scales: {
+          x: { grid: { display: false } },
+          y: {
+            ticks: {
+              callback: function (v) {
+                return bn(v);
+              },
+            },
+            grid: { color: "rgba(30,159,224,.08)" },
+          },
+        },
+      },
+    });
+
+    var byGL = {};
+    (monthly.rows || []).forEach(function (r) {
+      if (!byGL[r.glName])
+        byGL[r.glName] = monthly.labels.map(function () {
+          return 0;
+        });
+      r.months.forEach(function (v, i) {
+        byGL[r.glName][i] += v;
+      });
+    });
+    charts.mGL = new Chart(document.getElementById("chartMonthlyGL"), {
+      type: "bar",
+      data: {
+        labels: monthly.labels,
+        datasets: Object.keys(byGL).map(function (k, i) {
+          return {
+            label: k,
+            data: byGL[k],
+            backgroundColor: COLORS[i % COLORS.length],
+            stack: "m",
+            borderRadius: 3,
+          };
+        }),
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: "bottom",
+            labels: { boxWidth: 10, font: { weight: "800", size: 10 } },
+          },
+          tooltip: {
+            callbacks: {
+              label: function (c) {
+                return " " + c.dataset.label + ": " + bn(c.raw);
+              },
+            },
+          },
+        },
+        scales: {
+          x: { stacked: true, grid: { display: false } },
+          y: {
+            stacked: true,
+            ticks: {
+              callback: function (v) {
+                return bn(v);
+              },
+            },
+            grid: { color: "rgba(30,159,224,.08)" },
+          },
+        },
+      },
+    });
+  }
+
+  function renderHeatmap() {
+    var rows = DATA.heatmap || [];
+    var max = 1;
+    rows.forEach(function (r) {
+      r.values.forEach(function (v) {
+        if (v > max) max = v;
+      });
+    });
+    var header =
+      '<div class="h"></div>' +
+      periods
+        .map(function (p) {
+          return '<div class="h">' + esc(p) + "</div>";
+        })
+        .join("");
+    var body = rows
+      .map(function (r) {
+        var cells = r.values
+          .map(function (v) {
+            var t = max ? v / max : 0;
+            var bg =
+              "rgba(30,159,224," + (0.1 + t * 0.9).toFixed(3) + ")";
+            var col = t > 0.45 ? "#fff" : "#065a94";
+            return (
+              '<div class="c" style="background:' +
+              bg +
+              ";color:" +
+              col +
+              '" title="' +
+              esc(full(v)) +
+              '">' +
+              esc(bn(v)) +
+              "</div>"
+            );
+          })
+          .join("");
+        return (
+          '<div class="r" title="' +
+          esc(r.key) +
+          '">' +
+          esc(r.key) +
+          "</div>" +
+          cells
+        );
+      })
+      .join("");
+    document.getElementById("heatMap").innerHTML = header + body;
+  }
+
+  function renderMovers() {
+    var up = DATA.moversUp || [];
+    var down = DATA.moversDown || [];
+    document.getElementById("moversUp").innerHTML = up.length
+      ? up
+          .map(function (m) {
+            return (
+              '<div class="mover up"><span title="' +
+              esc(m.key) +
+              '">' +
+              esc(m.key) +
+              '</span><span class="amt">+' +
+              esc(full(m.gap)) +
+              "</span></div>"
+            );
+          })
+          .join("")
+      : "<div class='desc'>Không có tăng</div>";
+    document.getElementById("moversDown").innerHTML = down.length
+      ? down
+          .map(function (m) {
+            return (
+              '<div class="mover down"><span title="' +
+              esc(m.key) +
+              '">' +
+              esc(m.key) +
+              '</span><span class="amt">' +
+              esc(full(m.gap)) +
+              "</span></div>"
+            );
+          })
+          .join("")
+      : "<div class='desc'>Không có giảm</div>";
+  }
+
+  function renderCompare() {
+    destroy("cmp");
+    var a = document.getElementById("cmpA").value;
+    var b = document.getElementById("cmpB").value;
+    var va = gVal(a);
+    var vb = gVal(b);
+    var d = vb - va;
+    var pct = va ? (d / va) * 100 : 0;
+    document.getElementById("cmpKpis").innerHTML =
+      '<div class="chip"><span class="emoji">A</span>' +
+      esc(a) +
+      ': <b class="mono">' +
+      esc(bn(va)) +
+      "</b></div>" +
+      '<div class="chip"><span class="emoji">B</span>' +
+      esc(b) +
+      ': <b class="mono">' +
+      esc(bn(vb)) +
+      "</b></div>" +
+      '<div class="chip ' +
+      (d >= 0 ? "up" : "down") +
+      '"><span class="emoji">Δ</span>Diff: <b class="mono">' +
+      esc((d >= 0 ? "+" : "") + bn(d)) +
+      "</b> (" +
+      esc((pct >= 0 ? "+" : "") + pct.toFixed(1) + "%") +
+      ")</div>";
+
+    var ccs = [];
+    (DATA.budgetRows || []).forEach(function (r) {
+      if (ccs.indexOf(r.ccName) < 0) ccs.push(r.ccName);
+    });
+    var da = ccs.map(function (cc) {
+      return DATA.budgetRows
+        .filter(function (r) {
+          return r.ccName === cc;
+        })
+        .reduce(function (s, r) {
+          return s + (r.values[a] || 0);
+        }, 0);
+    });
+    var db = ccs.map(function (cc) {
+      return DATA.budgetRows
+        .filter(function (r) {
+          return r.ccName === cc;
+        })
+        .reduce(function (s, r) {
+          return s + (r.values[b] || 0);
+        }, 0);
+    });
+    charts.cmp = new Chart(document.getElementById("chartCompare"), {
+      type: "bar",
+      data: {
+        labels: ccs,
+        datasets: [
+          { label: a, data: da, backgroundColor: "#1e9fe0", borderRadius: 9 },
+          { label: b, data: db, backgroundColor: "#ffd54f", borderRadius: 9 },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: "bottom",
+            labels: { boxWidth: 10, font: { weight: "800" } },
+          },
+          tooltip: {
+            callbacks: {
+              label: function (c) {
+                return " " + c.dataset.label + ": " + bn(c.raw);
+              },
+            },
+          },
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { font: { weight: "800" } } },
+          y: {
+            ticks: {
+              callback: function (v) {
+                return bn(v);
+              },
+            },
+            grid: { color: "rgba(30,159,224,.08)" },
+          },
+        },
+      },
+    });
+  }
+
+  function renderAssetsCharts() {
+    destroy("topA");
+    destroy("aGL");
+    var top = (DATA.assets || []).slice(0, 12);
+    charts.topA = new Chart(document.getElementById("chartTopAssets"), {
+      type: "bar",
+      data: {
+        labels: top.map(function (a) {
+          return shortName(a.name || a.code, 24);
+        }),
+        datasets: [
+          {
+            data: top.map(function (a) {
+              return a.cost;
+            }),
+            backgroundColor: "#1e9fe0",
+            borderRadius: 9,
+          },
+        ],
+      },
+      options: {
+        indexAxis: "y",
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: function (items) {
+                var i = items[0] && items[0].dataIndex;
+                var a = top[i];
+                return a ? a.name || a.code : "";
+              },
+              label: function (c) {
+                return " " + full(c.raw);
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            ticks: {
+              callback: function (v) {
+                return bn(v);
+              },
+            },
+            grid: { color: "rgba(30,159,224,.08)" },
+          },
+          y: {
+            grid: { display: false },
+            ticks: { font: { size: 10, weight: "800" } },
+          },
+        },
+      },
+    });
+
+    var map = {};
+    (DATA.assetsAll || []).forEach(function (a) {
+      var k = a.glName || "Other";
+      map[k] = (map[k] || 0) + (a.cost || 0);
+    });
+    var labels = Object.keys(map);
+    charts.aGL = new Chart(document.getElementById("chartAssetGL"), {
+      type: "doughnut",
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            data: labels.map(function (k) {
+              return map[k];
+            }),
+            backgroundColor: COLORS,
+            borderWidth: 3,
+            borderColor: "#fff",
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: "55%",
+        plugins: {
+          legend: {
+            position: "bottom",
+            labels: { boxWidth: 10, font: { weight: "800", size: 10.5 } },
+          },
+          tooltip: {
+            callbacks: {
+              label: function (c) {
+                return " " + c.label + ": " + bn(c.raw);
+              },
+            },
+          },
+        },
+      },
+    });
+
+    var sc = DATA.kpi.statusCounts || {};
+    document.getElementById("statusChips").innerHTML =
+      '<div class="chip"><span class="emoji">🟢</span>Active <b>' +
+      (sc.active || 0) +
+      "</b></div>" +
+      '<div class="chip"><span class="emoji">🟡</span>Ending soon <b>' +
+      (sc.ending_soon || 0) +
+      "</b></div>" +
+      '<div class="chip"><span class="emoji">🔴</span>Ended <b>' +
+      (sc.ended || 0) +
+      "</b></div>" +
+      '<div class="chip"><span class="emoji">⭐</span>Favorites <b>' +
+      favs.size +
+      "</b></div>";
+  }
+
+  function renderTables() {
+    var head = document.getElementById("budgetHead");
+    var body = document.getElementById("budgetBody");
+    var filterCC = document.getElementById("filterCC");
+    var filterGL = document.getElementById("filterGL");
+
+    if (!filterCC.dataset.ready) {
+      Array.from(
+        new Set(
+          (DATA.budgetRows || []).map(function (r) {
+            return r.ccName;
+          })
+        )
+      ).forEach(function (c) {
+        var o = document.createElement("option");
+        o.value = c;
+        o.textContent = c;
+        filterCC.appendChild(o);
+      });
+      Array.from(
+        new Set(
+          (DATA.budgetRows || []).map(function (r) {
+            return r.glName;
+          })
+        )
+      ).forEach(function (c) {
+        var o = document.createElement("option");
+        o.value = c;
+        o.textContent = c;
+        filterGL.appendChild(o);
+      });
+      filterCC.dataset.ready = "1";
+      filterCC.onchange = renderTables;
+      filterGL.onchange = renderTables;
+    }
+
+    head.innerHTML =
+      "<tr><th>CC</th><th>G/L</th>" +
+      periods
+        .map(function (p) {
+          return '<th class="num">' + esc(p) + "</th>";
+        })
+        .join("") +
+      '<th class="num">GAP 104/103</th></tr>';
+
+    var cc = filterCC.value;
+    var gl = filterGL.value;
+    var gq = (
+      document.getElementById("globalSearch").value || ""
+    )
+      .toLowerCase()
+      .trim();
+    var rows = (DATA.budgetRows || []).filter(function (r) {
+      if (cc && r.ccName !== cc) return false;
+      if (gl && r.glName !== gl) return false;
+      if (gq && (r.ccName + " " + r.glName).toLowerCase().indexOf(gq) < 0)
+        return false;
+      return true;
+    });
+
+    body.innerHTML = rows
+      .map(function (r) {
+        var gap = r.gaps["104Ki"];
+        if (gap == null)
+          gap = (r.values["104Ki"] || 0) - (r.values["103Ki"] || 0);
+        var gapCls = gap > 0 ? "pos" : gap < 0 ? "neg" : "";
+        return (
+          '<tr><td><span class="tag">' +
+          esc(r.ccName) +
+          '</span></td><td><span class="tag blue">' +
+          esc(r.glName) +
+          "</span></td>" +
+          periods
+            .map(function (p) {
+              return (
+                '<td class="num">' + esc(full(r.values[p] || 0)) + "</td>"
+              );
+            })
+            .join("") +
+          '<td class="num ' +
+          gapCls +
+          '">' +
+          esc(full(gap)) +
+          "</td></tr>"
+        );
+      })
+      .join("");
+
+    var q = (
+      document.getElementById("assetSearch").value ||
+      document.getElementById("globalSearch").value ||
+      ""
+    )
+      .toLowerCase()
+      .trim();
+    var st = document.getElementById("statusFilter").value;
+    var list = (DATA.assetsAll || []).slice();
+    if (st === "fav")
+      list = list.filter(function (a) {
+        return favs.has(a.code || a.name);
+      });
+    else if (st)
+      list = list.filter(function (a) {
+        return a.status === st;
+      });
+    if (q) {
+      list = list.filter(function (a) {
+        return (
+          (
+            (a.name || "") +
+            (a.code || "") +
+            (a.ccName || "") +
+            (a.glName || "")
+          )
+            .toLowerCase()
+            .indexOf(q) >= 0
+        );
+      });
+    }
+    list.sort(function (a, b) {
+      var k = assetSort.key;
+      var av = a[k];
+      var bv = b[k];
+      if (typeof av === "string")
+        return String(av).localeCompare(String(bv || "")) * assetSort.dir;
+      return ((av || 0) - (bv || 0)) * assetSort.dir;
+    });
+
+    document.getElementById("assetBody").innerHTML = list
+      .slice(0, 120)
+      .map(function (a) {
+        var id = a.code || a.name;
+        var on = favs.has(id) ? "on" : "";
+        var idx = DATA.assetsAll.indexOf(a);
+        return (
+          '<tr data-idx="' +
+          idx +
+          '">' +
+          '<td><span class="star ' +
+          on +
+          '" data-fav="' +
+          esc(id) +
+          '">⭐</span></td>' +
+          '<td class="mono">' +
+          esc(a.code || "—") +
+          "</td>" +
+          '<td class="name" title="' +
+          esc(a.name || "") +
+          '">' +
+          esc(a.name || "—") +
+          "</td>" +
+          '<td><span class="tag">' +
+          esc(a.ccName || "—") +
+          "</span></td>" +
+          '<td><span class="tag violet">' +
+          esc(a.glName || "—") +
+          "</span></td>" +
+          "<td>" +
+          statusTag(a.status) +
+          "</td>" +
+          '<td class="num">' +
+          esc(full(a.cost)) +
+          "</td>" +
+          '<td class="num">' +
+          esc(a.life != null ? a.life : "—") +
+          "</td>" +
+          '<td class="num">' +
+          esc(full(a.totalAll)) +
+          "</td></tr>"
+        );
+      })
+      .join("");
+
+    Array.prototype.forEach.call(
+      document.querySelectorAll("#assetBody tr"),
+      function (tr) {
+        tr.style.cursor = "pointer";
+        tr.onclick = function (e) {
+          if (e.target.classList.contains("star")) {
+            e.stopPropagation();
+            var id = e.target.getAttribute("data-fav");
+            if (favs.has(id)) favs.delete(id);
+            else favs.add(id);
+            saveFavs();
+            renderTables();
+            renderFavs();
+            renderAssetsCharts();
+            toast(favs.has(id) ? "Đã gắn sao ⭐" : "Bỏ sao");
+            return;
+          }
+          openAsset(Number(tr.dataset.idx));
+        };
+      }
+    );
+  }
+
+  function renderFavs() {
+    var list = (DATA.assetsAll || []).filter(function (a) {
+      return favs.has(a.code || a.name);
+    });
+    var el = document.getElementById("favList");
+    if (!list.length) {
+      el.innerHTML =
+        "<div class='desc'>Chưa có favorite — bấm ⭐ trên bảng asset.</div>";
+      return;
+    }
+    el.innerHTML = list
+      .map(function (a) {
+        return (
+          '<div class="mover"><span>⭐ ' +
+          esc(shortName(a.name || a.code, 42)) +
+          '</span><span class="amt mono">' +
+          esc(bn(a.cost)) +
+          "</span></div>"
+        );
+      })
+      .join("");
+  }
+
+  function openAsset(idx) {
+    var a = DATA.assetsAll[idx];
+    if (!a) return;
+    document.getElementById("modalTitle").textContent =
+      "📦 " + (a.name || a.code || "Asset");
+    document.getElementById("modalSub").textContent =
+      (a.code || "") +
+      " · " +
+      (a.ccName || "") +
+      " · " +
+      (a.glName || "") +
+      " · " +
+      a.status;
+    document.getElementById("modalBody").innerHTML = [
+      ["Acquisition", full(a.cost) + " VND"],
+      ["Life", a.life != null ? a.life + " months" : "—"],
+      ["Monthly rate", full(a.monthlyRate || 0) + " VND"],
+      ["Start → End", (a.start || "—") + " → " + (a.end || "—")],
+      ["Months left", a.monthsLeft != null ? a.monthsLeft : "—"],
+      ["Σ MT KH", full(a.totalAll) + " VND"],
+    ]
+      .map(function (pair) {
+        return (
+          '<div class="row"><span>' +
+          esc(pair[0]) +
+          '</span><span class="mono">' +
+          esc(pair[1]) +
+          "</span></div>"
+        );
+      })
+      .join("");
+
+    if (assetDetailChart) assetDetailChart.destroy();
+    assetDetailChart = new Chart(
+      document.getElementById("chartAssetDetail"),
+      {
+        type: "bar",
+        data: {
+          labels: periods,
+          datasets: [
+            {
+              data: a.periodTotals || [],
+              backgroundColor: "#7c4dff",
+              borderRadius: 9,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: function (c) {
+                  return " " + full(c.raw);
+                },
+              },
+            },
+          },
+          scales: {
+            x: { grid: { display: false } },
+            y: {
+              ticks: {
+                callback: function (v) {
+                  return bn(v);
+                },
+              },
+              grid: { color: "rgba(30,159,224,.08)" },
+            },
+          },
+        },
+      }
+    );
+    document.getElementById("modalBg").classList.add("show");
+  }
+
+  function renderAll(meta) {
+    if (meta !== false) {
+      document.getElementById("srcName").textContent = DATA.meta.source || "—";
+      document.getElementById("genAt").textContent =
+        DATA.meta.fileMtimeIso || DATA.meta.generated || "—";
+      document.getElementById("footMeta").textContent =
+        "v" +
+        (DATA.meta.version || "4") +
+        " · " +
+        (DATA.meta.generated || "") +
+        " · " +
+        (DATA.kpi.assetCount || 0) +
+        " assets";
+    }
+    renderKPI();
+    renderInsights();
+    renderPeriod();
+    renderWaterfall();
+    renderPies();
+    renderStack();
+    renderGap();
+    renderCompare();
+    renderMonthly();
+    renderHeatmap();
+    renderMovers();
+    renderAssetsCharts();
+    renderTables();
+    renderFavs();
+    var ht = document.getElementById("helperText");
+    if (ht) ht.textContent = tips[helperIdx % tips.length];
+  }
+
+  function party() {
+    var box = document.getElementById("confetti");
+    if (!box) return;
+    box.innerHTML = "";
+    var cols = ["#1e9fe0", "#e53935", "#ffd54f", "#fff", "#7c4dff", "#26a69a"];
+    for (var i = 0; i < 36; i++) {
+      var el = document.createElement("i");
+      el.style.left = Math.random() * 100 + "%";
+      el.style.background = cols[i % cols.length];
+      el.style.animationDuration = 2 + Math.random() * 2 + "s";
+      el.style.width = 6 + Math.random() * 6 + "px";
+      el.style.height = el.style.width;
+      box.appendChild(el);
+    }
+    setTimeout(function () {
+      box.innerHTML = "";
+    }, 4000);
+    ringBell();
+  }
+
+  function closeSidebar() {
+    document.getElementById("sidebar").classList.remove("open");
+    document.getElementById("sidebarOverlay").classList.remove("show");
+  }
+
+  function openSidebar() {
+    document.getElementById("sidebar").classList.add("open");
+    document.getElementById("sidebarOverlay").classList.add("show");
+  }
+
+  function wireEvents() {
+    document.getElementById("assetSearch").oninput = renderTables;
+    document.getElementById("statusFilter").onchange = renderTables;
+    document.getElementById("globalSearch").oninput = renderTables;
+
+    document.getElementById("modalClose").onclick = function () {
+      document.getElementById("modalBg").classList.remove("show");
+    };
+    document.getElementById("modalBg").onclick = function (e) {
+      if (e.target.id === "modalBg")
+        e.currentTarget.classList.remove("show");
+    };
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") {
+        document.getElementById("modalBg").classList.remove("show");
+        closeSidebar();
+      }
+    });
+
+    document.getElementById("btnPrint").onclick = function () {
+      window.print();
+    };
+    document.getElementById("btnNight").onclick = function () {
+      document.body.classList.toggle("night");
+      var on = document.body.classList.contains("night");
+      localStorage.setItem("dora_night", on ? "1" : "0");
+      toast(on ? "Night mode 🌙" : "Day mode ☀️");
+    };
+    document.getElementById("btnConfetti").onclick = function () {
+      party();
+      toast("Yay! 🎉");
+    };
+    document.getElementById("bellBtn").onclick = function () {
+      ringBell();
+      helperIdx++;
+      document.getElementById("helperText").textContent =
+        tips[helperIdx % tips.length];
+      document.getElementById("helper").classList.remove("hidden");
+      toast("Ting-a-ling 🔔");
+    };
+    document.getElementById("helperNext").onclick = function () {
+      helperIdx++;
+      document.getElementById("helperText").textContent =
+        tips[helperIdx % tips.length];
+      ringBell();
+    };
+    document.getElementById("helperHide").onclick = function () {
+      document.getElementById("helper").classList.add("hidden");
+    };
+
+    document.getElementById("btnShare").onclick = async function () {
+      var g = gVal(focusPeriod);
+      var text =
+        "LOG Depreciation (" +
+        DATA.meta.source +
+        ")\n" +
+        "Focus " +
+        focusPeriod +
+        ": " +
+        full(g) +
+        " VND\n" +
+        "MT total: " +
+        full(DATA.kpi.totalMT) +
+        " VND\n" +
+        "Assets: " +
+        DATA.kpi.assetCount +
+        "\n" +
+        "Generated: " +
+        DATA.meta.generated;
+      try {
+        await navigator.clipboard.writeText(text);
+        toast("Đã copy summary 📝");
+      } catch (e) {
+        toast("Clipboard blocked");
+      }
+    };
+
+    document.getElementById("btnExportCsv").onclick = function () {
+      var lines = [["CC", "G/L"].concat(periods).concat(["GAP_104_103"])];
+      (DATA.budgetRows || []).forEach(function (r) {
+        var gap = r.gaps["104Ki"];
+        if (gap == null)
+          gap = (r.values["104Ki"] || 0) - (r.values["103Ki"] || 0);
+        lines.push(
+          [r.ccName, r.glName]
+            .concat(
+              periods.map(function (p) {
+                return r.values[p] || 0;
+              })
+            )
+            .concat([gap])
+        );
+      });
+      var csv = lines
+        .map(function (row) {
+          return row
+            .map(function (x) {
+              return '"' + String(x).replace(/"/g, '""') + '"';
+            })
+            .join(",");
+        })
+        .join("\n");
+      var blob = new Blob(["\uFEFF" + csv], {
+        type: "text/csv;charset=utf-8",
+      });
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "log_depreciation_budget.csv";
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast("CSV exported 📤");
+    };
+
+    Array.prototype.forEach.call(
+      document.querySelectorAll("th[data-sort]"),
+      function (th) {
+        th.onclick = function () {
+          var k = th.dataset.sort;
+          if (assetSort.key === k) assetSort.dir *= -1;
+          else {
+            assetSort.key = k;
+            assetSort.dir = -1;
+          }
+          renderTables();
+        };
+      }
+    );
+
+    var titles = {
+      overview: "Overview",
+      midterm: "Mid-term",
+      compare: "Compare",
+      monthly: "Monthly",
+      heatmap: "Heatmap",
+      movers: "Movers",
+      assets: "Assets",
+      tables: "Tables",
+      favs: "Favorites",
+    };
+    Array.prototype.forEach.call(
+      document.querySelectorAll("[data-nav]"),
+      function (a) {
+        a.addEventListener("click", function () {
+          Array.prototype.forEach.call(
+            document.querySelectorAll("[data-nav]"),
+            function (x) {
+              x.classList.remove("active");
+            }
+          );
+          a.classList.add("active");
+          var id = a.getAttribute("href").slice(1);
+          document.getElementById("pageTitle").textContent =
+            titles[id] || "Dashboard";
+          closeSidebar();
+        });
+      }
+    );
+
+    // mobile menu
+    var btnMenu = document.getElementById("btnMenu");
+    var overlay = document.getElementById("sidebarOverlay");
+    if (btnMenu) btnMenu.onclick = openSidebar;
+    if (overlay) overlay.onclick = closeSidebar;
+
+    var fi = document.getElementById("fileInput");
+    var dz = document.getElementById("dropZone");
     if (fi) {
-      fi.onchange = () => {
+      fi.onchange = function () {
         if (fi.files && fi.files[0]) uploadExcel(fi.files[0]);
+        fi.value = "";
       };
     }
     if (dz) {
-      ["dragenter", "dragover"].forEach((ev) =>
-        dz.addEventListener(ev, (e) => {
+      ["dragenter", "dragover"].forEach(function (ev) {
+        dz.addEventListener(ev, function (e) {
           e.preventDefault();
           dz.classList.add("drag");
-        })
-      );
-      ["dragleave", "drop"].forEach((ev) =>
-        dz.addEventListener(ev, (e) => {
+        });
+      });
+      ["dragleave", "drop"].forEach(function (ev) {
+        dz.addEventListener(ev, function (e) {
           e.preventDefault();
           dz.classList.remove("drag");
-        })
-      );
-      dz.addEventListener("drop", (e) => {
-        const f = e.dataTransfer.files && e.dataTransfer.files[0];
+        });
+      });
+      dz.addEventListener("drop", function (e) {
+        var f = e.dataTransfer.files && e.dataTransfer.files[0];
         if (f) uploadExcel(f);
       });
-      dz.addEventListener("click", () => fi && fi.click());
+      dz.addEventListener("click", function () {
+        if (fi) fi.click();
+      });
+      dz.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          if (fi) fi.click();
+        }
+      });
     }
-    const btnReload = document.getElementById("btnReload");
+
+    var btnReload = document.getElementById("btnReload");
     if (btnReload) {
-      btnReload.onclick = async () => {
+      btnReload.onclick = async function () {
+        if (location.protocol === "file:") {
+          toast("Cần chạy start.bat / server.py");
+          return;
+        }
+        setLiveBadge("sync", "Reloading…");
         try {
           await fetch("/api/reload");
-          await pollLive();
-          toast("Force reload Excel 🔄");
+          // force re-fetch even if mtime same
+          var res = await fetch("/api/data", { cache: "no-store" });
+          var payload = await res.json();
+          if (payload.ok && payload.data) applyLiveData(payload.data, false);
+          else await pollLive();
         } catch (e) {
-          toast("Cần server.py để reload");
+          toast("Cần chạy start.bat / server.py");
+          setLiveBadge("err", "Reload failed");
         }
       };
     }
-    setTimeout(party, 400);
-  } catch (err) {
-    console.error(err);
-    toast("Lỗi JS: " + err.message);
-    alert("Dashboard error: " + err.message);
+
+    // scroll-spy for nav
+    var sectionIds = Object.keys(titles);
+    var spyTimer = null;
+    window.addEventListener(
+      "scroll",
+      function () {
+        if (spyTimer) return;
+        spyTimer = setTimeout(function () {
+          spyTimer = null;
+          var y = window.scrollY + 140;
+          var current = "overview";
+          sectionIds.forEach(function (id) {
+            var el = document.getElementById(id);
+            if (el && el.offsetTop <= y) current = id;
+          });
+          Array.prototype.forEach.call(
+            document.querySelectorAll("[data-nav]"),
+            function (a) {
+              var id = a.getAttribute("href").slice(1);
+              a.classList.toggle("active", id === current);
+            }
+          );
+          document.getElementById("pageTitle").textContent =
+            titles[current] || "Dashboard";
+        }, 80);
+      },
+      { passive: true }
+    );
   }
-});
+
+  document.addEventListener("DOMContentLoaded", function () {
+    try {
+      if (nightPref) document.body.classList.add("night");
+      initSelects();
+      wireEvents();
+      renderAll(true);
+      startLivePolling();
+      if (!sessionStorage.getItem("dora_welcomed")) {
+        sessionStorage.setItem("dora_welcomed", "1");
+        setTimeout(function () {
+          toast("Xin chào! Dashboard sẵn sàng 🐱");
+        }, 400);
+      }
+    } catch (err) {
+      console.error(err);
+      toast("Lỗi: " + err.message);
+      alert("Dashboard error: " + err.message);
+    }
+  });
+})();

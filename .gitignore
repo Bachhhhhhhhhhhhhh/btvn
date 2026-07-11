@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
-uploads/
-_check.js
+uploads/*
+!uploads/.gitkeep
+_check*.js
 .DS_Store
+*.bak
