@@ -1,7 +1,8 @@
-/* Doraemon LOG Dashboard — clean JS (no minified one-liners) */
-/* global Chart, DATA */
+/* Doraemon LOG Dashboard v4 — live updates + cute UI */
+/* global Chart */
 
-const periods = DATA.meta.periods;
+let DATA = window.DATA;
+let periods = DATA.meta.periods;
 const colors = [
   "#00A0E9", "#E60012", "#FFD54F", "#7C4DFF",
   "#26A69A", "#FF8A65", "#42A5F5", "#EC407A", "#66BB6A",
@@ -13,16 +14,25 @@ let assetDetailChart = null;
 let assetSort = { key: "cost", dir: -1 };
 let favs = new Set(JSON.parse(localStorage.getItem("dora_favs") || "[]"));
 let helperIdx = 0;
+let liveTimer = null;
+let liveVersion = DATA.meta.fileMtime || 0;
+let liveMode = false;
+let lastPulse = 0;
 
-const tips = [
-  "Bấm chuông 🔔 để nghe ting-a-ling và nhận mẹo ngẫu nhiên!",
-  "Dùng Compare để soi 2 kỳ khi thuyết trình — rất gọn.",
-  "Gắn ⭐ asset quan trọng, xem lại ở Favorites.",
-  "Lọc Ending ≤24m để thấy TS sắp hết khấu hao.",
-  "Export CSV mang bảng budget sang Excel trong 1 nốt nhạc.",
-  "Night mode xem ban đêm cũng dễ chịu 🌙",
-  ...(DATA.insights || []),
-];
+function buildTips() {
+  return [
+    "Bấm chuông 🔔 để nghe ting-a-ling và nhận mẹo ngẫu nhiên!",
+    "Chạy py -3 server.py để bật LIVE — sửa Excel là web tự cập nhật!",
+    "Kéo thả file .xlsx vào vùng Upload để nạp data mới ngay.",
+    "Dùng Compare để soi 2 kỳ khi thuyết trình — rất gọn.",
+    "Gắn ⭐ asset quan trọng, xem lại ở Favorites.",
+    "Lọc Ending ≤24m để thấy TS sắp hết khấu hao.",
+    "Export CSV mang bảng budget sang Excel trong 1 nốt nhạc.",
+    "Night mode xem ban đêm cũng dễ chịu 🌙",
+    ...(DATA.insights || []),
+  ];
+}
+let tips = buildTips();
 
 function bn(v) {
   if (v == null || isNaN(v)) return "—";
@@ -1061,12 +1071,146 @@ function openAsset(idx) {
   document.getElementById("modalBg").classList.add("show");
 }
 
+function setLiveBadge(state, text) {
+  const el = document.getElementById("liveBadge");
+  if (!el) return;
+  el.className = "live-badge " + state;
+  el.innerHTML =
+    '<span class="live-dot"></span><span class="live-text">' + text + "</span>";
+}
+
+function applyLiveData(newData, opts) {
+  const optsSafe = opts || {};
+  const prevFocus = focusPeriod;
+  DATA = newData;
+  window.DATA = newData;
+  periods = DATA.meta.periods;
+  tips = buildTips();
+  liveVersion = DATA.meta.fileMtime || liveVersion;
+  // keep focus if still valid
+  if (periods.indexOf(prevFocus) >= 0) focusPeriod = prevFocus;
+  else focusPeriod = periods[0];
+  // refresh period selects
+  ["periodFocus", "cmpA", "cmpB"].forEach((id) => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = "";
+    periods.forEach((p) => {
+      const o = document.createElement("option");
+      o.value = p;
+      o.textContent = p;
+      sel.appendChild(o);
+    });
+    if (periods.indexOf(cur) >= 0) sel.value = cur;
+    else if (id === "periodFocus") sel.value = focusPeriod;
+    else if (id === "cmpA") sel.value = periods[0];
+    else sel.value = periods[1] || periods[0];
+  });
+  // reset filter ready flags so options rebuild
+  const fcc = document.getElementById("filterCC");
+  const fgl = document.getElementById("filterGL");
+  if (fcc) {
+    fcc.dataset.ready = "";
+    fcc.innerHTML = '<option value="">All CC</option>';
+  }
+  if (fgl) {
+    fgl.dataset.ready = "";
+    fgl.innerHTML = '<option value="">All G/L</option>';
+  }
+  renderAll(true);
+  document.body.classList.add("data-flash");
+  setTimeout(() => document.body.classList.remove("data-flash"), 700);
+  if (!optsSafe.silent) {
+    ringBell();
+    toast("🔄 Data updated · " + (DATA.meta.fileMtimeIso || DATA.meta.generated));
+  }
+  setLiveBadge("on", "LIVE · updated");
+}
+
+async function pollLive() {
+  try {
+    const st = await fetch("/api/status", { cache: "no-store" });
+    if (!st.ok) throw new Error("status " + st.status);
+    const meta = await st.json();
+    liveMode = true;
+    const ver = meta.fileMtime || meta.version || 0;
+    const label =
+      "LIVE · " +
+      (meta.source || "Excel") +
+      (meta.fileMtimeIso ? " · " + meta.fileMtimeIso : "");
+    if (ver && ver !== liveVersion) {
+      const res = await fetch("/api/data", { cache: "no-store" });
+      const payload = await res.json();
+      if (payload.ok && payload.data) {
+        applyLiveData(payload.data);
+        return;
+      }
+    }
+    setLiveBadge("on", label);
+    const ago = meta.lastExtract
+      ? Math.max(0, Math.round(Date.now() / 1000 - meta.lastExtract))
+      : null;
+    const foot = document.getElementById("liveFoot");
+    if (foot) {
+      foot.textContent =
+        "Watching every " +
+        (meta.pollSec || 2) +
+        "s" +
+        (ago != null ? " · last extract " + ago + "s ago" : "");
+    }
+  } catch (e) {
+    liveMode = false;
+    setLiveBadge("off", "STATIC · open via server.py for LIVE");
+  }
+}
+
+function startLivePolling() {
+  // only when served over http(s)
+  if (location.protocol === "file:") {
+    setLiveBadge("off", "STATIC · run: py -3 server.py");
+    return;
+  }
+  pollLive();
+  liveTimer = setInterval(pollLive, 2500);
+}
+
+async function uploadExcel(file) {
+  if (!file) return;
+  setLiveBadge("sync", "Uploading…");
+  toast("Đang upload " + file.name + "…");
+  try {
+    if (location.protocol === "file:") {
+      toast("Cần chạy server.py để upload Excel");
+      setLiveBadge("off", "STATIC · run server.py");
+      return;
+    }
+    const fd = new FormData();
+    fd.append("file", file, file.name);
+    const res = await fetch("/api/upload", { method: "POST", body: fd });
+    const payload = await res.json();
+    if (!payload.ok) throw new Error(payload.error || "upload failed");
+    const dataRes = await fetch("/api/data", { cache: "no-store" });
+    const wrap = await dataRes.json();
+    if (wrap.ok && wrap.data) applyLiveData(wrap.data);
+    else toast("Upload ok — reload page");
+  } catch (err) {
+    console.error(err);
+    toast("Upload lỗi: " + err.message);
+    setLiveBadge("off", "Upload failed");
+  }
+}
+
 function renderAll(meta) {
   if (meta !== false) {
     document.getElementById("srcName").textContent = DATA.meta.source;
-    document.getElementById("genAt").textContent = DATA.meta.generated;
+    document.getElementById("genAt").textContent =
+      DATA.meta.fileMtimeIso || DATA.meta.generated;
     document.getElementById("footMeta").textContent =
-      "v" + (DATA.meta.version || "3") + " · " + DATA.meta.generated;
+      "v" +
+      (DATA.meta.version || "4") +
+      " · " +
+      (DATA.meta.generated || "");
   }
   renderKPI();
   renderInsights();
@@ -1082,8 +1226,8 @@ function renderAll(meta) {
   renderAssetsCharts();
   renderTables();
   renderFavs();
-  document.getElementById("helperText").textContent =
-    tips[helperIdx % tips.length];
+  const ht = document.getElementById("helperText");
+  if (ht) ht.textContent = tips[helperIdx % tips.length];
 }
 
 function party() {
@@ -1233,7 +1377,47 @@ document.addEventListener("DOMContentLoaded", () => {
     initSelects();
     wireEvents();
     renderAll(true);
-    setTimeout(party, 500);
+    startLivePolling();
+    // drag-drop upload zone
+    const dz = document.getElementById("dropZone");
+    const fi = document.getElementById("fileInput");
+    if (fi) {
+      fi.onchange = () => {
+        if (fi.files && fi.files[0]) uploadExcel(fi.files[0]);
+      };
+    }
+    if (dz) {
+      ["dragenter", "dragover"].forEach((ev) =>
+        dz.addEventListener(ev, (e) => {
+          e.preventDefault();
+          dz.classList.add("drag");
+        })
+      );
+      ["dragleave", "drop"].forEach((ev) =>
+        dz.addEventListener(ev, (e) => {
+          e.preventDefault();
+          dz.classList.remove("drag");
+        })
+      );
+      dz.addEventListener("drop", (e) => {
+        const f = e.dataTransfer.files && e.dataTransfer.files[0];
+        if (f) uploadExcel(f);
+      });
+      dz.addEventListener("click", () => fi && fi.click());
+    }
+    const btnReload = document.getElementById("btnReload");
+    if (btnReload) {
+      btnReload.onclick = async () => {
+        try {
+          await fetch("/api/reload");
+          await pollLive();
+          toast("Force reload Excel 🔄");
+        } catch (e) {
+          toast("Cần server.py để reload");
+        }
+      };
+    }
+    setTimeout(party, 400);
   } catch (err) {
     console.error(err);
     toast("Lỗi JS: " + err.message);

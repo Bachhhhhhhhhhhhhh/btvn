@@ -62,7 +62,7 @@ html = r'''<!DOCTYPE html>
     </svg>
     <div class="k">4D Pocket · Finance</div>
     <div class="t">Doraemon LOG</div>
-    <div class="s">Cute Control Room v3</div>
+    <div class="s">Live Control Room v4</div>
   </div>
   <a class="nav-item active" href="#overview" data-nav><span class="ico">🏠</span>Overview</a>
   <a class="nav-item" href="#midterm" data-nav><span class="ico">🚀</span>Mid-term</a>
@@ -88,17 +88,25 @@ html = r'''<!DOCTYPE html>
       <h1 id="pageTitle">Overview</h1>
       <div class="sub">Source: <span id="srcName">—</span> · <span id="genAt">—</span> · VND</div>
     </div>
-    <div class="toolbar">
-      <input id="globalSearch" type="search" placeholder="🔍 Tìm asset / CC / G/L…" style="min-width:200px" />
+    <div class="toolbar top-live">
+      <div id="liveBadge" class="live-badge off"><span class="live-dot"></span><span class="live-text">…</span></div>
+      <input id="globalSearch" type="search" placeholder="🔍 Tìm asset / CC / G/L…" style="min-width:180px" />
       <label class="lbl">Focus <select id="periodFocus"></select></label>
+      <button type="button" class="btn" id="btnReload">🔄 Reload Excel</button>
     </div>
+  </div>
+
+  <div class="drop-zone" id="dropZone">
+    📁 Kéo thả Excel (.xlsx) vào đây để cập nhật realtime
+    <small>Click để chọn file · chạy <b>py -3 server.py</b> để bật LIVE watch</small>
+    <input id="fileInput" type="file" accept=".xlsx,.xlsm" hidden />
   </div>
 
   <div class="pocket">
     <div class="bell" id="bellBtn" title="Ring!"></div>
     <div>
-      <p id="pocketText">Xin chào! Mình là Doraemon — cùng xem khấu hao LOG thật dễ thương nhé!</p>
-      <span>Tip: so sánh 2 kỳ · gắn sao favorites · xem TS sắp hết khấu hao</span>
+      <p id="pocketText">Xin chào! Mình là Doraemon — dashboard LIVE: sửa Excel là web tự nhảy số!</p>
+      <span id="liveFoot">Tip: so sánh 2 kỳ · favorites · upload Excel · server watch</span>
     </div>
   </div>
 
@@ -187,7 +195,7 @@ html = r'''<!DOCTYPE html>
   <div class="card"><div id="favList" class="desc">Chưa có favorite — bấm ⭐ trên bảng asset!</div></div>
 
   <footer>
-    <div>🐱 Doraemon LOG Control Room v3 · fixed & cute</div>
+    <div>🐱 Doraemon LOG Control Room v4 · LIVE + cute</div>
     <div class="mono" id="footMeta">—</div>
   </footer>
 </main>
